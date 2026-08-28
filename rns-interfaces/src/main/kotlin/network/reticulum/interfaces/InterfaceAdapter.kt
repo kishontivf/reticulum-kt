@@ -123,7 +123,17 @@ class InterfaceAdapter private constructor(
 
     override fun heldAnnounceCount(): Int = iface.heldAnnounceCount()
 
+    /**
+     * The one place every transport-initiated send passes through, and therefore the one place a
+     * disabled interface can be stopped for certain.
+     *
+     * `Transport` filters on [online] before it gets here in most cases, but not in all of them —
+     * a route already in the path table is transmitted without that check — so the guard belongs
+     * here as well rather than only at the call sites.
+     */
     override fun send(data: ByteArray) {
+        if (!iface.isEnabled) return
+
         iface.processOutgoing(data)
     }
 

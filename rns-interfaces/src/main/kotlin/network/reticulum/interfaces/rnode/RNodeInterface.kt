@@ -19,6 +19,7 @@ import java.io.OutputStream
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.math.abs
 import kotlin.math.pow
+import network.reticulum.common.RnsLog
 
 /**
  * RNode interface for Reticulum — connects to RNode LoRa hardware via
@@ -836,7 +837,7 @@ class RNodeInterface(
     }
 
     private fun log(message: String) {
-        println("[RNode:$name] $message")
+        RnsLog.debug("RNodeInterface") { "[RNode:$name] $message" }
     }
 
     override fun toString(): String = "RNodeInterface[$name]"

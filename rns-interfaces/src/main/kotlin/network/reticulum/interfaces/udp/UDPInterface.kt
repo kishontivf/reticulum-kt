@@ -15,6 +15,7 @@ import java.net.*
 import java.nio.ByteBuffer
 import java.nio.channels.DatagramChannel
 import java.util.concurrent.atomic.AtomicBoolean
+import network.reticulum.common.RnsLog
 
 /**
  * UDP interface for Reticulum.
@@ -397,7 +398,7 @@ class UDPInterface(
         val timestamp = java.time.LocalDateTime.now().format(
             java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
         )
-        println("[$timestamp] [$name] $message")
+        RnsLog.debug("UDPInterface") { "[$name] $message" }
     }
 
     override fun toString(): String {

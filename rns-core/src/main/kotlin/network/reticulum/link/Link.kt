@@ -33,6 +33,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
+import network.reticulum.common.RnsLog
 
 /**
  * Callbacks for link events.
@@ -413,12 +414,7 @@ class Link private constructor(
         }
 
         private fun log(message: String) {
-            val timestamp =
-                java.time.LocalDateTime.now().format(
-                    java.time.format.DateTimeFormatter
-                        .ofPattern("yyyy-MM-dd HH:mm:ss.SSS"),
-                )
-            println("[$timestamp] [Link] $message")
+            RnsLog.debug("Link") { "[Link] $message" }
         }
     }
 
@@ -2065,10 +2061,10 @@ class Link private constructor(
      */
     private fun processResponse(packet: Packet) {
         try {
-            println("[Link] processResponse: decrypting ${packet.data.size} bytes")
+            RnsLog.debug("Link") { "[Link] processResponse: decrypting ${packet.data.size} bytes" }
             val packedResponse = decrypt(packet.data)
             if (packedResponse == null) {
-                println("[Link] processResponse: decrypt returned null!")
+                RnsLog.debug("Link") { "[Link] processResponse: decrypt returned null!" }
                 return
             }
 
@@ -2115,10 +2111,10 @@ class Link private constructor(
             val transferSize = responseDataSize
 
             // Pass to handleResponse
-            println("[Link] processResponse: requestId=${requestId.joinToString("") { "%02x".format(it) }}, dataSize=$responseDataSize")
+            RnsLog.debug("Link") { "[Link] processResponse: requestId=${requestId.joinToString("") { "%02x".format(it) }}, dataSize=$responseDataSize" }
             handleResponse(requestId, responseData, responseDataSize, transferSize)
         } catch (e: Exception) {
-            println("[Link] processResponse EXCEPTION: ${e.message}")
+            RnsLog.debug("Link") { "[Link] processResponse EXCEPTION: ${e.message}" }
             e.printStackTrace()
         }
     }
@@ -3518,7 +3514,7 @@ class RequestReceipt(
                 try {
                     callback(this)
                 } catch (e: Exception) {
-                    println("[RequestReceipt] Error in progress callback: ${e.message}")
+                    RnsLog.error("Link") { "[RequestReceipt] Error in progress callback: ${e.message}" }
                 }
             }
         }
@@ -3528,7 +3524,7 @@ class RequestReceipt(
                 try {
                     callback(this)
                 } catch (e: Exception) {
-                    println("[RequestReceipt] Error in response callback: ${e.message}")
+                    RnsLog.error("Link") { "[RequestReceipt] Error in response callback: ${e.message}" }
                 }
             }
         }
@@ -3548,7 +3544,7 @@ class RequestReceipt(
                 try {
                     callback(this)
                 } catch (e: Exception) {
-                    println("[RequestReceipt] Error in failed callback: ${e.message}")
+                    RnsLog.error("Link") { "[RequestReceipt] Error in failed callback: ${e.message}" }
                 }
             }
         }
@@ -3570,7 +3566,7 @@ class RequestReceipt(
                 try {
                     callback(this)
                 } catch (e: Exception) {
-                    println("[RequestReceipt] Error in progress callback: ${e.message}")
+                    RnsLog.error("Link") { "[RequestReceipt] Error in progress callback: ${e.message}" }
                 }
             }
         }

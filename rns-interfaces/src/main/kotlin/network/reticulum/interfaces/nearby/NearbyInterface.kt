@@ -12,6 +12,7 @@ import network.reticulum.transport.Transport
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import network.reticulum.common.RnsLog
 
 /**
  * Nearby Connections mesh interface for Reticulum networking.
@@ -274,7 +275,7 @@ class NearbyInterface(
     fun getConnectedCount(): Int = peers.size
 
     private fun log(message: String) {
-        println("[NearbyInterface][$name] $message")
+        RnsLog.debug("NearbyInterface") { "[NearbyInterface][$name] $message" }
     }
 
     override fun toString(): String = "NearbyInterface[$name] (${peers.size} peers)"

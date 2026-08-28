@@ -7,6 +7,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 import kotlin.math.pow
+import network.reticulum.common.RnsLog
 
 /**
  * Callback type for message handlers.
@@ -400,10 +401,10 @@ class Channel(
             // and never advances the rx sequence. Surface it to the test tap so a
             // listener can observe e.g. the bz2 decompression-bomb abort.
             receiveErrorTapForTest?.let { tap -> runCatching { tap(e) } }
-            println("[Channel] Error receiving message: ${e.message}")
+            RnsLog.error("Channel") { "[Channel] Error receiving message: ${e.message}" }
         } catch (e: Exception) {
             receiveErrorTapForTest?.let { tap -> runCatching { tap(e) } }
-            println("[Channel] Unexpected error receiving message: ${e.message}")
+            RnsLog.error("Channel") { "[Channel] Unexpected error receiving message: ${e.message}" }
         }
     }
 
@@ -509,7 +510,7 @@ class Channel(
                     break
                 }
             } catch (e: Exception) {
-                println("[Channel] Error in message callback: ${e.message}")
+                RnsLog.error("Channel") { "[Channel] Error in message callback: ${e.message}" }
                 e.printStackTrace()
             }
         }
@@ -593,7 +594,7 @@ class Channel(
      */
     private fun retryEnvelope(envelope: Envelope): Boolean {
         if (envelope.tries >= MAX_TRIES) {
-            println("[Channel] Retry count exceeded, tearing down Link")
+            RnsLog.debug("Channel") { "[Channel] Retry count exceeded, tearing down Link" }
             shutdown()
             // Mirror python Channel._packet_timeout (Channel.py:578-583): after
             // the channel shuts down, tell the outlet it timed out, which tears

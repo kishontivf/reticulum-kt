@@ -13,6 +13,7 @@ import network.reticulum.interfaces.Interface
 import network.reticulum.interfaces.toRef
 import network.reticulum.transport.Transport
 import java.util.concurrent.ConcurrentHashMap
+import network.reticulum.common.RnsLog
 
 /**
  * BLE mesh interface for Reticulum networking.
@@ -747,7 +748,7 @@ class BLEInterface(
     private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
 
     private fun log(message: String) {
-        println("[BLEInterface][$name] $message")
+        RnsLog.debug("BLEInterface") { "[BLEInterface][$name] $message" }
     }
 
     override fun toString(): String = "BLEInterface[$name]"

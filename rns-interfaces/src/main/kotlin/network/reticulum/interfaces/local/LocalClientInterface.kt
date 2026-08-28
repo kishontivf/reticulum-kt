@@ -22,6 +22,7 @@ import java.nio.channels.SocketChannel
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicBoolean
+import network.reticulum.common.RnsLog
 
 /**
  * Local client interface for connecting to shared daemon.
@@ -426,7 +427,7 @@ class LocalClientInterface : Interface {
         val timestamp = java.time.LocalDateTime.now().format(
             java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
         )
-        println("[$timestamp] [$name] $message")
+        RnsLog.debug("LocalClientInterface") { "[$name] $message" }
     }
 
     override fun toString(): String {

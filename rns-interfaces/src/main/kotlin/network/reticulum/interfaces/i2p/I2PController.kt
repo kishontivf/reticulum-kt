@@ -8,6 +8,7 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import network.reticulum.common.RnsLog
 
 /**
  * I2P tunnel controller — manages SAM sessions and tunnel lifecycle.
@@ -229,7 +230,7 @@ class I2PController(
         val timestamp = java.time.LocalDateTime.now().format(
             java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
         )
-        println("[$timestamp] [I2PController] $message")
+        RnsLog.debug("I2PController") { "[I2PController] $message" }
     }
 }
 

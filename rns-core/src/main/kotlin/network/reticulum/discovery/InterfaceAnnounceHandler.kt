@@ -9,6 +9,7 @@ import network.reticulum.transport.AnnounceHandler
 import network.reticulum.common.ByteArrayKey
 import network.reticulum.transport.Transport
 import org.msgpack.core.MessagePack
+import network.reticulum.common.RnsLog
 
 /**
  * Handles incoming discovery announces from the network.
@@ -275,7 +276,7 @@ class InterfaceAnnounceHandler(
     }
 
     private fun log(msg: String) {
-        println("[Discovery:Handler] $msg")
+        RnsLog.debug("InterfaceAnnounceHandler") { "[Discovery:Handler] $msg" }
     }
 
     private fun unpackValue(unpacker: org.msgpack.core.MessageUnpacker): Any? {

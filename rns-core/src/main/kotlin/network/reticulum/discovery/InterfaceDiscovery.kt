@@ -15,6 +15,7 @@ import org.msgpack.core.MessagePack
 import java.io.ByteArrayOutputStream
 import java.io.File
 import kotlin.coroutines.coroutineContext
+import network.reticulum.common.RnsLog
 
 /**
  * High-level interface discovery manager.
@@ -409,7 +410,7 @@ class InterfaceDiscovery(
     }
 
     private fun log(msg: String) {
-        println("[Discovery:Manager] $msg")
+        RnsLog.debug("InterfaceDiscovery") { "[Discovery:Manager] $msg" }
     }
 
     // ==================== Persistence ====================

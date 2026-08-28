@@ -24,6 +24,7 @@ import java.net.SocketException
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import network.reticulum.common.RnsLog
 
 /**
  * I2P server interface for Reticulum.
@@ -313,7 +314,7 @@ class I2PInterface(
         val timestamp = java.time.LocalDateTime.now().format(
             java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
         )
-        println("[$timestamp] [$name] $message")
+        RnsLog.debug("I2PInterface") { "[$name] $message" }
     }
 
     override fun toString(): String {

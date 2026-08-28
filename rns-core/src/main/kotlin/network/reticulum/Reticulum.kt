@@ -11,6 +11,7 @@ import java.io.File
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.util.concurrent.atomic.AtomicBoolean
+import network.reticulum.common.RnsLog
 
 /**
  * Main entry point for the Reticulum Network Stack.
@@ -456,12 +457,7 @@ class Reticulum private constructor(
         fun linkMtuDiscovery(): Boolean = LINK_MTU_DISCOVERY
 
         private fun log(message: String) {
-            val timestamp =
-                java.time.LocalDateTime.now().format(
-                    java.time.format.DateTimeFormatter
-                        .ofPattern("yyyy-MM-dd HH:mm:ss.SSS"),
-                )
-            println("[$timestamp] [Reticulum] $message")
+            RnsLog.debug("Reticulum") { message }
         }
     }
 

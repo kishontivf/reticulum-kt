@@ -26,6 +26,7 @@ import java.nio.channels.SocketChannel
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
+import network.reticulum.common.RnsLog
 
 /**
  * TCP client interface for Reticulum.
@@ -594,7 +595,7 @@ class TCPClientInterface(
         val timestamp = java.time.LocalDateTime.now().format(
             java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
         )
-        println("[$timestamp] [$name] $message")
+        RnsLog.debug("TCPClientInterface") { "[$name] $message" }
     }
 
     private fun debugLog(message: String) {
@@ -602,7 +603,7 @@ class TCPClientInterface(
             val timestamp = java.time.LocalDateTime.now().format(
                 java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
             )
-            println("[$timestamp] [$name] [DEBUG] $message")
+            RnsLog.debug("TCPClientInterface") { "[$name] [DEBUG] $message" }
         }
     }
 

@@ -63,4 +63,29 @@ object AnnounceFilter {
             else -> TransportConstants.PATHFINDER_E
         }
     }
+
+    /**
+     * Whether an arriving announce should be held rather than processed, when the interface it
+     * came in on is over its announce bandwidth allocation.
+     *
+     * Ingress limiting exists to stop an unsolicited announce flood costing this node bandwidth it
+     * never asked for, so it applies to announces for destinations it does not already know.
+     *
+     * **A path response is exempt, and that exemption is load-bearing.** It is the answer to a
+     * request this node made moments ago — the one mechanism by which an unknown destination
+     * becomes a known one. Holding it defeats path discovery outright: the requester learns
+     * nothing, waits out its budget and then sends with no route. A busy relay interface can
+     * deliver the same response more than once inside a second, so holding on allocation alone
+     * discards every copy and strands the traffic that was waiting on the route.
+     *
+     * @param isKnownDestination whether the path table already holds this destination
+     * @param isPathResponse whether the announce answers a path request rather than arriving
+     *   unbidden
+     * @param isOverAllocation what the receiving interface says about its announce bandwidth
+     */
+    fun shouldHold(
+        isKnownDestination: Boolean,
+        isPathResponse: Boolean,
+        isOverAllocation: Boolean
+    ): Boolean = !isKnownDestination && !isPathResponse && isOverAllocation
 }
