@@ -380,6 +380,15 @@ class Link private constructor(
             )
         }
 
+        /** Result holder for [buildInitiatorRequestDataForTest]. */
+        class InitiatorRequestDataForTest(
+            val requestData: ByteArray,
+            val pubBytes: ByteArray,
+            val sigPubBytes: ByteArray,
+            val mtu: Int,
+            val mode: Int,
+        )
+
         /**
          * Conformance test seam: build a genuine initiator LINKREQUEST payload
          * (pub_bytes || sig_pub_bytes || signalling_bytes) with freshly-generated
@@ -392,15 +401,6 @@ class Link private constructor(
          * the value a no-MTU-discovery next hop yields). No port logic — pure
          * read-only assembly for the link-request adversarial commands.
          */
-        /** Result holder for [buildInitiatorRequestDataForTest]. */
-        class InitiatorRequestDataForTest(
-            val requestData: ByteArray,
-            val pubBytes: ByteArray,
-            val sigPubBytes: ByteArray,
-            val mtu: Int,
-            val mode: Int,
-        )
-
         fun buildInitiatorRequestDataForTest(
             mode: Int = LinkConstants.MODE_DEFAULT,
         ): InitiatorRequestDataForTest {
@@ -1820,21 +1820,6 @@ class Link private constructor(
     }
 
     /**
-     * Receive and process an incoming packet on this link.
-     *
-     * This is the main packet processing method that handles all link traffic including:
-     * - Regular data packets
-     * - Keepalives
-     * - Link identification
-     * - RTT measurements
-     * - Resource advertisements and transfers
-     * - Requests and responses
-     * - Channel data
-     * - Link close packets
-     *
-     * @param packet The incoming packet to process
-     */
-    /**
      * Conformance test seam: a per-link tap invoked for every inbound packet at
      * the top of receive(), the kotlin equivalent of the reference bridge
      * monkey-patching link.receive to observe inbound RESPONSE / RESOURCE_ADV
@@ -1853,6 +1838,21 @@ class Link private constructor(
     @Volatile
     var proveTapForTest: ((Packet) -> Unit)? = null
 
+    /**
+     * Receive and process an incoming packet on this link.
+     *
+     * This is the main packet processing method that handles all link traffic including:
+     * - Regular data packets
+     * - Keepalives
+     * - Link identification
+     * - RTT measurements
+     * - Resource advertisements and transfers
+     * - Requests and responses
+     * - Channel data
+     * - Link close packets
+     *
+     * @param packet The incoming packet to process
+     */
     fun receive(packet: Packet) {
         inboundTapForTest?.let { tap -> runCatching { tap(packet) } }
         // Skip closed links, and skip initiator keepalive responses

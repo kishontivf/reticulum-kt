@@ -2710,11 +2710,6 @@ object Transport {
     }
 
     /**
-     * Internal path request used for forwarding. Supports explicit tag (to avoid loops)
-     * and recursive mode (which throttles based on announce cap).
-     * Python Transport.py:2541-2588
-     */
-    /**
      * Test seam: issue a path request with an EXPLICIT request tag. The public
      * [requestPath] always mints a fresh random tag; this lets the conformance
      * bridge thread the harness-supplied tag through so the emitted payload tag
@@ -2728,6 +2723,11 @@ object Transport {
         tag: ByteArray,
     ) = requestPathInternal(destinationHash, onInterface, tag, recursive = false)
 
+    /**
+     * Internal path request used for forwarding. Supports explicit tag (to avoid loops)
+     * and recursive mode (which throttles based on announce cap).
+     * Python Transport.py:2541-2588
+     */
     private fun requestPathInternal(
         destinationHash: ByteArray,
         onInterface: InterfaceRef? = null,
@@ -3516,12 +3516,6 @@ object Transport {
     }
 
     /**
-     * Send a packet.
-     *
-     * @param packet Packet to send
-     * @return true if sent successfully
-     */
-    /**
      * Conformance test seam: a tap invoked for every packet handed to outbound,
      * letting the bridge capture the on-wire packets a link emits during
      * receive/prove/teardown (LINKCLOSE, the 0xFE keepalive answer, LRPROOF, ...).
@@ -3534,6 +3528,12 @@ object Transport {
     @Volatile
     var outboundTapForTest: ((Packet) -> Unit)? = null
 
+    /**
+     * Send a packet.
+     *
+     * @param packet Packet to send
+     * @return true if sent successfully
+     */
     fun outbound(packet: Packet): Boolean {
         if (!started.get()) return false
         if (paused.get()) return false
@@ -5548,7 +5548,6 @@ object Transport {
     /** Snapshot the live tunnel table. */
     fun tunnelInfosForTest(): List<TunnelInfo> = tunnels.values.toList()
 
-    /** Size of the active packet hashlist (excludes the rotated-out prev set). */
     /** Seeds one path, so a test can exercise the table without a network to learn it from. */
     fun recordPathForTest(
         destinationHash: ByteArray,
@@ -6324,8 +6323,6 @@ object Transport {
     }
 
     // ===== Tunnel Table Persistence =====
-
-    /** Maximum random blobs to persist per path — reuses TransportConstants value */
 
     /**
      * Save tunnel table to persistent storage.
