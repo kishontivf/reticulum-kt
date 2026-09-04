@@ -7,7 +7,7 @@ plugins {
 }
 
 allprojects {
-    group = "com.github.torlando-tech.reticulum-kt"
+    group = "com.github.kishontivf.reticulum-kt"
     version = System.getenv("VERSION")?.removePrefix("v") ?: "0.1.0-SNAPSHOT"
 }
 
