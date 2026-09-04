@@ -37,6 +37,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.thread
 import kotlin.concurrent.withLock
+import network.reticulum.common.RnsLog
 
 /**
  * Handler for incoming announces.
@@ -571,6 +572,11 @@ object Transport {
 
         // Clear all tables
         pathTable.clear()
+        // Fallback tier (fork addition): the embedder re-registers its interfaces on the next
+        // start, and re-nominates the fallback ones then, so nothing here survives a stop.
+        fallbackInterfaceNames.clear()
+        fallbackPinnedDestinations.clear()
+        fallbackLastHeard.clear()
         linkTable.clear()
         reverseTable.clear()
         announceTable.clear()
@@ -1435,8 +1441,350 @@ object Transport {
     }
 
     /**
-     * Expire (remove) a path.
+     * Drops every path whose interface can no longer carry it, and says how many went.
+     *
+     * For a carrier being switched off, or one that has gone down. A path remembers the interface
+     * it was learned on, and one learned over an interface that is now offline is not a slow route
+     * — it is no route, and it will keep being chosen over the working ones because it is fewer
+     * hops. This removes exactly those and leaves every good path alone: expiring indiscriminately
+     * throws away a direct one-hop LAN route and lets the next path response from a relay take its
+     * place, which is worse than the problem it was meant to solve.
      */
+    fun expireDeadPaths(): Int {
+        val dead = pathTable.filterValues { entry ->
+            findInterfaceByHash(entry.receivingInterfaceHash)?.online != true
+        }
+
+        dead.keys.forEach(pathTable::remove)
+
+        if (dead.isNotEmpty()) log("Dropped ${dead.size} path(s) whose interface is not carrying traffic")
+
+        return dead.size
+    }
+
+    /**
+     * Drops the route to one destination, but only if it was learned on [interfaceHash].
+     *
+     * For a peer that has stopped being reachable on one carrier while the carrier itself carries
+     * on. [expireDeadPaths] cannot see that: the interface is online, and the route through it
+     * looks perfect right up until the packets go into a socket nobody is reading. Only the host
+     * knows the peer has gone, and this is the narrowest thing it can say about it — leave every
+     * other route alone, including this destination's routes over anything else.
+     *
+     * @return true if a route was dropped.
+     */
+    fun expirePathOn(destinationHash: ByteArray, interfaceHash: ByteArray): Boolean {
+        val key = destinationHash.toKey()
+        val entry = pathTable[key] ?: return false
+
+        if (!entry.receivingInterfaceHash.contentEquals(interfaceHash)) return false
+
+        pathTable.remove(key)
+
+        log("Dropped the path to ${destinationHash.toHexString()}: its peer left that interface")
+
+        return true
+    }
+
+    // ===== Fallback-interface tier (fork addition, not in Python/upstream) =====
+    //
+    // Ported from reticulum-swift's PathTable so iOS and Android route the same way. An
+    // embedder-nominated *fallback* interface — an app's virtual BLE carrier, say — is a direct
+    // 1-hop link, so by hop count it would out-rank every real route. This tier inverts that: a
+    // normal interface always beats a fallback one for the same destination regardless of hops,
+    // and the fallback takes the route only once the normal path is provably not delivering —
+    // silent past [TransportConstants.FALLBACK_TAKEOVER_GRACE_MS], marked unresponsive by delivery
+    // failures, or pinned by the embedder. Hop counts are never altered, so direct-vs-routed send
+    // behaviour is unaffected. See [arbitrateFallbackAdmission] for the decision itself.
+
+    /** Interfaces (by name) the embedder marked as low-priority fallback links. */
+    private val fallbackInterfaceNames = ConcurrentHashMap.newKeySet<String>()
+
+    /**
+     * Destinations pinned to their fallback interface. While pinned, announces on NON-fallback
+     * interfaces are rejected for that destination: a transport node may keep relaying the peer's
+     * now-dead TCP path for a while, and without the pin each stale relay would refresh the
+     * liveness signal and keep the carrier from ever taking the route over. The embedder pins a
+     * peer it knows is only reachable over the fallback — one that signalled it lost internet —
+     * and unpins it when that stops being true.
+     */
+    private val fallbackPinnedDestinations = ConcurrentHashMap.newKeySet<ByteArrayKey>()
+
+    /**
+     * Per-destination, per-interface wall-clock time (epoch millis) of the last announce that
+     * arrived on that interface. A liveness signal, not a freshness one: it is written for every
+     * arrival — duplicates included — because the takeover decision asks "is anything still being
+     * heard here", not "is this announce new". Pruned by age from [cullTables]; Swift instead
+     * drops these records with the path row, which is behaviourally equivalent (every reader uses
+     * a window far below the prune age) and age-based pruning keeps this fork's delta smaller.
+     */
+    private val fallbackLastHeard = ConcurrentHashMap<ByteArrayKey, ConcurrentHashMap<String, Long>>()
+
+    /**
+     * Marks (or unmarks) an interface as a low-priority fallback link. See the tier comment above.
+     *
+     * By name rather than by hash, deliberately: an interface that is deregistered and re-created
+     * keeps its name but not its hash, and the embedder's nomination is about the *kind* of link,
+     * which the name carries.
+     */
+    fun setFallbackInterface(interfaceName: String, isFallback: Boolean = true) {
+        if (isFallback) fallbackInterfaceNames.add(interfaceName) else fallbackInterfaceNames.remove(interfaceName)
+
+        log("[FALLBACK] register $interfaceName isFallback=$isFallback → ${fallbackInterfaceNames.sorted()}")
+    }
+
+    /** Pins (or unpins) a destination to its fallback interface. See [fallbackPinnedDestinations]. */
+    fun setDestinationPinnedToFallback(destinationHash: ByteArray, pinned: Boolean) {
+        val key = destinationHash.toKey()
+
+        if (pinned) fallbackPinnedDestinations.add(key) else fallbackPinnedDestinations.remove(key)
+
+        log("[FALLBACK] ${destinationHash.toHexString()} pinnedToFallback=$pinned")
+    }
+
+    /**
+     * Whether [destinationHash] was heard announcing on [interfaceName] within the last
+     * [withinMs] — that is, whether the peer is currently reachable over that specific interface.
+     * This is the read a dual-dispatch carrier copy would gate on, so a message is only duplicated
+     * onto a carrier whose far end is actually nearby.
+     */
+    fun wasHeardOnInterface(destinationHash: ByteArray, interfaceName: String, withinMs: Long): Boolean {
+        val at = fallbackLastHeard[destinationHash.toKey()]?.get(interfaceName) ?: return false
+
+        return System.currentTimeMillis() - at <= withinMs
+    }
+
+    /**
+     * The interface the route to [destinationHash] currently runs over, or null when there is none.
+     *
+     * Exposed because a *link* does not follow the path table. `attachedInterfaceHash` is fixed
+     * when the link activates and every later send on it goes out that way, bypassing routing
+     * entirely — which is correct for a link and wrong for a caller that has been holding one
+     * since before a better carrier existed. Comparing the two is the only way such a caller can
+     * notice, and the path table is the only thing that knows.
+     */
+    fun pathInterfaceHash(destinationHash: ByteArray): ByteArray? =
+        pathTable[destinationHash.toKey()]?.receivingInterfaceHash
+
+    /**
+     * Whether the route this node would use for [destinationHash] runs over a fallback carrier.
+     *
+     * Says nothing about whether that route is direct — see [isBestPathDirectOnFallback], which is
+     * the question a duplicate send has to ask.
+     */
+    fun isBestPathFallback(destinationHash: ByteArray): Boolean {
+        val entry = pathTable[destinationHash.toKey()] ?: return false
+        val name = findInterfaceByHash(entry.receivingInterfaceHash)?.name ?: return false
+
+        return fallbackInterfaceNames.contains(name)
+    }
+
+    /**
+     * Whether the route runs over a fallback carrier *and* reaches the destination directly.
+     *
+     * The condition under which a duplicate over that carrier would genuinely be the same send
+     * twice, and so the only one worth skipping for.
+     */
+    fun isBestPathDirectOnFallback(destinationHash: ByteArray): Boolean {
+        if (!isBestPathFallback(destinationHash)) return false
+
+        val entry = pathTable[destinationHash.toKey()] ?: return false
+
+        return entry.hops <= TransportConstants.DIRECT_HOPS
+    }
+
+    /**
+     * Sends [raw] a second time over every fallback carrier the destination was recently heard on,
+     * alongside whatever route it has already gone out by.
+     *
+     * **The route a destination has is not always a route that can deliver to it.** A peer within
+     * direct reach of a fallback carrier can still hold a multi-hop path through an unrelated
+     * relay, simply because that announce arrived first, and every packet sent down it is lost
+     * while the direct link sits idle. The path table cannot tell the difference: a relayed route
+     * is a valid route until something proves otherwise.
+     *
+     * Waiting for that to be *proven* is the alternative, and it is too slow: the delivery-failure
+     * demotion needs several unproven attempts, and each attempt is a retry interval. Sending a
+     * duplicate the moment the peer is known to be nearby costs one packet on a link that is
+     * already up, and the receiver drops whichever copy arrives second on its packet hash — so the
+     * duplicate is free wherever it was not needed.
+     *
+     * Gated on both halves for that reason: only over a carrier the destination has actually
+     * announced on within [heardWithinMs], and never when the normal route is already that carrier.
+     *
+     * @param heardWithinMs how recently the peer must have been heard on a carrier to count as near.
+     */
+    fun sendFallbackCopy(
+        destinationHash: ByteArray,
+        raw: ByteArray,
+        heardWithinMs: Long = TransportConstants.FALLBACK_COPY_HEARD_WITHIN,
+    ) {
+        if (fallbackInterfaceNames.isEmpty()) return
+
+        val destHex = destinationHash.toHexString()
+
+        // Only a *direct* carrier route makes the copy pointless. A multi-hop one on the same
+        // carrier is addressed to a relay — `hops > 1` puts the packet on the HEADER_2 transport
+        // branch — so a destination-addressed copy broadcast on the local link is a different
+        // packet reaching a different peer, not the same send twice. Skipping on the carrier alone
+        // would therefore suppress the copy in exactly the case it exists for.
+        if (isBestPathDirectOnFallback(destinationHash)) {
+            log("[DUAL] $destHex: skipped, the best path is already direct on a carrier")
+
+            return
+        }
+
+        fallbackInterfaceNames.forEach { name ->
+            val iface = interfaces.find { it.name == name } ?: return@forEach
+
+            if (!wasHeardOnInterface(destinationHash, name, heardWithinMs)) {
+                log("[DUAL] $destHex: $name skipped, the peer was not heard on it recently")
+
+                return@forEach
+            }
+
+            log("[DUAL] $destHex: sending a carrier copy over $name (${raw.size} bytes)")
+
+            transmit(iface, raw)
+        }
+    }
+
+    /** What the fallback tier says about one validated announce. See [arbitrateFallbackAdmission]. */
+    internal enum class FallbackArbitration {
+        /** Drop the announce: it would take the route from a path that still deserves it. */
+        REJECT,
+
+        /** Accept unconditionally, bypassing the regular admission tree. */
+        PROMOTE,
+
+        /** No fallback question in play — the regular admission tree decides. */
+        UNDECIDED,
+    }
+
+    /**
+     * The fallback tier's verdict on one validated announce, consulted before the regular
+     * (Python 5-path) admission tree.
+     *
+     * Also the single place [fallbackLastHeard] is written, and the ordering is load-bearing: the
+     * record lands before every later rejection — duplicate blobs included — because a carrier
+     * that is currently out-ranked still has to count as *heard*, or its own claim could never
+     * establish once the normal path dies. The one exception is a pin rejection: a stale relayed
+     * copy of a pinned peer's old normal route must not refresh the very liveness signal the pin
+     * exists to silence.
+     *
+     * [FallbackArbitration.PROMOTE] is unconditional when the destination is unpinned, and that is
+     * the point: both links carry the same peer's announces, and the direct 1-hop carrier beats
+     * the relayed copy of *the same announce* to this device every time — so any freshness gate
+     * lets the carrier hold the route indefinitely once it has it — a gate of that kind was tried
+     * in the sibling port and removed, having stranded the route on the slower interface for
+     * minutes at a time; the deprecated `fallbackPromoteMaxLagSeconds` is deliberately not ported.
+     * The real guards live elsewhere: the pin holds the carrier while
+     * the peer is offline, and the takeover grace stops a flap straight back.
+     */
+    internal fun arbitrateFallbackAdmission(
+        destinationHash: ByteArray,
+        candidate: InterfaceRef,
+        existingEntry: PathEntry?,
+    ): FallbackArbitration {
+        val key = destinationHash.toKey()
+        val candidateIsFallback = fallbackInterfaceNames.contains(candidate.name)
+
+        if (fallbackPinnedDestinations.contains(key) && !candidateIsFallback) {
+            log("[FALLBACK] REJECT ${destinationHash.toHexString()}: pinned to carrier, rejecting normal ${candidate.name}")
+
+            return FallbackArbitration.REJECT
+        }
+
+        fallbackLastHeard.computeIfAbsent(key) { ConcurrentHashMap() }[candidate.name] = System.currentTimeMillis()
+
+        if (existingEntry == null) return FallbackArbitration.UNDECIDED
+
+        val incumbentName = findInterfaceByHash(existingEntry.receivingInterfaceHash)?.name
+        val existingIsFallback = incumbentName != null && fallbackInterfaceNames.contains(incumbentName)
+
+        return when {
+            candidateIsFallback == existingIsFallback -> FallbackArbitration.UNDECIDED
+
+            candidateIsFallback -> if (normalRouteIsLive(destinationHash, key, existingEntry)) {
+                log(
+                    "[FALLBACK] REJECT ${destinationHash.toHexString()}: normal $incumbentName still live, " +
+                        "carrier ${candidate.name} stands by",
+                )
+
+                FallbackArbitration.REJECT
+            } else {
+                // The normal path is silent past the grace or failing to deliver. Not accepted
+                // outright: the regular tree still applies, so a duplicate of an announce we
+                // already hold cannot flip the route — only the carrier's own fresh announce can.
+                log(
+                    "[FALLBACK] ADMIT ${destinationHash.toHexString()}: normal $incumbentName not live → " +
+                        "carrier ${candidate.name} may take over",
+                )
+
+                FallbackArbitration.UNDECIDED
+            }
+
+            else -> {
+                log(
+                    "[FALLBACK] PROMOTE ${destinationHash.toHexString()}: normal ${candidate.name} replaces " +
+                        "fallback $incumbentName",
+                )
+
+                FallbackArbitration.PROMOTE
+            }
+        }
+    }
+
+    /**
+     * Whether the incumbent normal route still deserves the destination against a fallback
+     * candidate. Three liveness signals, each covering a hole in the previous one — and delivery
+     * failure out-ranks all three, because a peer behind carrier NAT resolves a multi-hop TCP path
+     * that never delivers, and connectivity and recency both look healthy while it fails.
+     */
+    private fun normalRouteIsLive(destinationHash: ByteArray, key: ByteArrayKey, entry: PathEntry): Boolean {
+        // pathIsUnresponsive (the state written by real delivery failures), not isPathUnresponsive
+        // (which also trips on plain inactivity): a quiet route is what the signals below judge.
+        if (pathIsUnresponsive(destinationHash)) return false
+
+        val graceMs = TransportConstants.FALLBACK_TAKEOVER_GRACE_MS
+
+        // Connectivity first: a live-but-quiet normal interface is not a dead one. A peer's
+        // announce reaches us over a rate-limiting TCP relay far less often than over the direct
+        // carrier, so announce recency alone falsely retires a healthy TCP route. The pin
+        // overrides this — a peer that signalled it lost internet must yield to the carrier even
+        // though our own socket to the relay is up.
+        val incumbentConnected = !fallbackPinnedDestinations.contains(key) &&
+            findInterfaceByHash(entry.receivingInterfaceHash)?.online == true
+
+        // Announce recency is the backstop for when the incumbent interface itself is gone — we
+        // lost internet — but a normal announce is still fresh; the entry's own age covers the
+        // startup window before any arrival has been recorded.
+        return incumbentConnected ||
+            normalInterfaceHeardRecently(key, graceMs) ||
+            System.currentTimeMillis() - entry.timestamp < graceMs
+    }
+
+    /**
+     * Whether the destination was heard on any NON-fallback interface within the window. Fallback
+     * interfaces are excluded, so a fast-re-announcing carrier can never mask a dead normal route.
+     */
+    private fun normalInterfaceHeardRecently(key: ByteArrayKey, withinMs: Long): Boolean {
+        val heard = fallbackLastHeard[key] ?: return false
+        val cutoff = System.currentTimeMillis() - withinMs
+
+        return heard.any { (interfaceName, at) ->
+            !fallbackInterfaceNames.contains(interfaceName) && at >= cutoff
+        }
+    }
+
+    /** Bounds [fallbackLastHeard]; see [TransportConstants.FALLBACK_LAST_HEARD_MAX_AGE_MS]. */
+    private fun pruneFallbackLastHeard(now: Long) {
+        val cutoff = now - TransportConstants.FALLBACK_LAST_HEARD_MAX_AGE_MS
+
+        fallbackLastHeard.values.forEach { heard -> heard.values.removeIf { it < cutoff } }
+        fallbackLastHeard.entries.removeIf { it.value.isEmpty() }
+    }
+
     fun expirePath(destinationHash: ByteArray) {
         pathTable.remove(destinationHash.toKey())
         pathStore?.removePath(destinationHash)
@@ -2362,11 +2710,6 @@ object Transport {
     }
 
     /**
-     * Internal path request used for forwarding. Supports explicit tag (to avoid loops)
-     * and recursive mode (which throttles based on announce cap).
-     * Python Transport.py:2541-2588
-     */
-    /**
      * Test seam: issue a path request with an EXPLICIT request tag. The public
      * [requestPath] always mints a fresh random tag; this lets the conformance
      * bridge thread the harness-supplied tag through so the emitted payload tag
@@ -2380,6 +2723,11 @@ object Transport {
         tag: ByteArray,
     ) = requestPathInternal(destinationHash, onInterface, tag, recursive = false)
 
+    /**
+     * Internal path request used for forwarding. Supports explicit tag (to avoid loops)
+     * and recursive mode (which throttles based on announce cap).
+     * Python Transport.py:2541-2588
+     */
     private fun requestPathInternal(
         destinationHash: ByteArray,
         onInterface: InterfaceRef? = null,
@@ -3168,12 +3516,6 @@ object Transport {
     }
 
     /**
-     * Send a packet.
-     *
-     * @param packet Packet to send
-     * @return true if sent successfully
-     */
-    /**
      * Conformance test seam: a tap invoked for every packet handed to outbound,
      * letting the bridge capture the on-wire packets a link emits during
      * receive/prove/teardown (LINKCLOSE, the 0xFE keepalive answer, LRPROOF, ...).
@@ -3186,6 +3528,12 @@ object Transport {
     @Volatile
     var outboundTapForTest: ((Packet) -> Unit)? = null
 
+    /**
+     * Send a packet.
+     *
+     * @param packet Packet to send
+     * @return true if sent successfully
+     */
     fun outbound(packet: Packet): Boolean {
         if (!started.get()) return false
         if (paused.get()) return false
@@ -3263,14 +3611,19 @@ object Transport {
 
         if (usePathRouting) {
             // We have a path - use it
-            val outboundInterface = findInterfaceByHash(pathEntry!!.receivingInterfaceHash)
+            // `takeIf { it.online }` matters as much as the lookup. Every other send path filters
+            // on `online`, and this one did not — so a destination whose route was already in the
+            // path table kept being transmitted onto an interface that was offline or switched off,
+            // silently, while the broadcast fallback that would have found a working one never ran.
+            val outboundInterface =
+                findInterfaceByHash(pathEntry!!.receivingInterfaceHash)?.takeIf { it.online }
             if (outboundInterface == null) {
                 // Interface no longer available (e.g., AutoInterface recreated with new hash
                 // after app restart). Drop the stale path entry — matches Python behavior
                 // (Transport.py:105: "The interface is no longer available").
                 // The broadcast fallback below will handle the packet, and a path request
                 // will naturally re-discover the route with the current interface hash.
-                log("Removing stale path for $destHex: interface hash no longer matches any registered interface")
+                log("Removing stale path for $destHex: its interface is gone or not carrying traffic")
                 pathTable.remove(packet.destinationHash.toKey())
             }
             if (outboundInterface != null) {
@@ -3624,8 +3977,21 @@ object Transport {
         // Apply ingress limiting for unknown destinations
         // Python Transport.py:1563-1571 — only limit announces for destinations
         // not already in the path table (known destinations use normal rate limiting)
-        val isKnownDestination = pathTable.containsKey(destHash.toKey())
-        if (!isKnownDestination && interfaceRef.shouldIngressLimit()) {
+        //
+        // A PATH_RESPONSE is exempt, and that exemption is load-bearing. Ingress limiting exists
+        // to stop unsolicited announce floods costing this node bandwidth it did not ask for; a
+        // path response is the answer to a question this node asked moments ago, and holding it
+        // defeats path discovery outright — the requester learns nothing, waits out its budget and
+        // sends unrouted. A busy relay interface can deliver the same path response more than
+        // once inside a second, so holding on allocation alone discards every copy and strands the
+        // traffic that was waiting on the route.
+        val shouldHold = AnnounceFilter.shouldHold(
+            isKnownDestination = pathTable.containsKey(destHash.toKey()),
+            isPathResponse = packet.context == PacketContext.PATH_RESPONSE,
+            isOverAllocation = interfaceRef.shouldIngressLimit(),
+        )
+
+        if (shouldHold) {
             // Python Transport.py:1563-1571 — hold and return immediately.
             // Interface.processHeldAnnounces() will re-inject via Transport.inbound()
             // when the burst subsides, so the path/identity will be learned then.
@@ -3663,7 +4029,15 @@ object Transport {
         // direct path if their random_blobs happened to differ. The worse-hop
         // branch is similarly emission-time-aware in Python.
         val existingEntry = pathTable[destHash.toKey()]
-        val shouldAdd =
+
+        // Fallback-interface tier (fork addition): a normal interface out-ranks a fallback one for
+        // the same destination regardless of hop count, a pinned destination rejects normal
+        // announces outright, and every arrival is recorded as the liveness signal the takeover
+        // decision reads. REJECT and PROMOTE settle admission here; UNDECIDED leaves it to the
+        // Python tree below, unchanged.
+        val fallbackArbitration = arbitrateFallbackAdmission(destHash, interfaceRef, existingEntry)
+
+        val regularTreeShouldAdd =
             if (existingEntry != null) {
                 val announceEmitted = timebaseFromRandomBlob(announceData.randomHash)
                 val pathTimebase = timebaseFromRandomBlobs(existingEntry.randomBlobs)
@@ -3688,6 +4062,12 @@ object Transport {
             } else {
                 true // Unknown destination, always add
             }
+
+        val shouldAdd = when (fallbackArbitration) {
+            FallbackArbitration.REJECT -> false
+            FallbackArbitration.PROMOTE -> true
+            FallbackArbitration.UNDECIDED -> regularTreeShouldAdd
+        }
 
         if (!shouldAdd) {
             // Python: when should_add is False, no retransmission or path update happens.
@@ -5168,7 +5548,32 @@ object Transport {
     /** Snapshot the live tunnel table. */
     fun tunnelInfosForTest(): List<TunnelInfo> = tunnels.values.toList()
 
-    /** Size of the active packet hashlist (excludes the rotated-out prev set). */
+    /** Seeds one path, so a test can exercise the table without a network to learn it from. */
+    fun recordPathForTest(
+        destinationHash: ByteArray,
+        receivingInterfaceHash: ByteArray,
+        hops: Int = 1,
+    ) {
+        pathTable[destinationHash.toKey()] = PathEntry(
+            timestamp = System.currentTimeMillis(),
+            nextHop = destinationHash,
+            hops = hops,
+            expires = System.currentTimeMillis() + TransportConstants.PATHFINDER_E,
+            randomBlobs = mutableListOf(),
+            receivingInterfaceHash = receivingInterfaceHash,
+            announcePacketHash = ByteArray(32),
+        )
+    }
+
+    /** Backdates (or plants) one last-heard record, so a test can age a liveness signal. */
+    internal fun setFallbackLastHeardForTest(
+        destinationHash: ByteArray,
+        interfaceName: String,
+        timestampMs: Long,
+    ) {
+        fallbackLastHeard.computeIfAbsent(destinationHash.toKey()) { ConcurrentHashMap() }[interfaceName] = timestampMs
+    }
+
     fun packetHashlistSizeForTest(): Int = packetHashlist.size
 
     /** Whether a packet hash is currently remembered (active or prev set). */
@@ -5459,6 +5864,9 @@ object Transport {
 
         // Remove expired discovery path requests
         discoveryPathRequests.entries.removeIf { now > it.value.timeout }
+
+        // Fallback tier (fork addition): bound the last-heard bookkeeping alongside the paths.
+        pruneFallbackLastHeard(now)
 
         // Remove expired tunnels
         cleanExpiredTunnels()
@@ -5916,8 +6324,6 @@ object Transport {
 
     // ===== Tunnel Table Persistence =====
 
-    /** Maximum random blobs to persist per path — reuses TransportConstants value */
-
     /**
      * Save tunnel table to persistent storage.
      * Format: Array of [tunnel_id, interface_hash, paths_array, expires]
@@ -6323,12 +6729,7 @@ object Transport {
     }
 
     private fun log(message: String) {
-        val timestamp =
-            java.time.LocalDateTime.now().format(
-                java.time.format.DateTimeFormatter
-                    .ofPattern("yyyy-MM-dd HH:mm:ss.SSS"),
-            )
-        println("[$timestamp] [Transport] $message")
+        RnsLog.debug("Transport") { message }
     }
 }
 

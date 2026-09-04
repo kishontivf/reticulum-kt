@@ -1,5 +1,6 @@
 package network.reticulum.packet
 
+import network.reticulum.common.RnsLog
 import network.reticulum.common.DestinationType
 import network.reticulum.common.RnsConstants
 import network.reticulum.common.toHexString
@@ -236,7 +237,9 @@ class PacketReceipt internal constructor(
             try {
                 callback(this)
             } catch (e: Exception) {
-                System.err.println("[PacketReceipt] Error in $callbackType callback for ${hash.toHexString()}: ${e.message}")
+                RnsLog.error("PacketReceipt", e) {
+                    "Error in $callbackType callback for ${hash.toHexString()}"
+                }
             }
         }
     }

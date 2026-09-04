@@ -56,6 +56,26 @@ object TransportConstants {
     /** Minimum interval for automated path requests in milliseconds. */
     const val PATH_REQUEST_MI = 20_000L
 
+    /**
+     * How recently a destination must have announced on a carrier for a dual-dispatch copy to be
+     * worth sending over it. Matches the Swift build's `heardWithin` default.
+     *
+     * Two minutes rather than something tighter because a peer announces every thirty seconds or
+     * so and a couple of missed announces is ordinary; the cost of being wrong is one duplicate
+     * packet on a link that is already up, and the cost of being too strict is the message the
+     * copy exists to rescue.
+     */
+    const val FALLBACK_COPY_HEARD_WITHIN = 120_000L
+
+    /**
+     * The hop count of a path that reaches its destination itself rather than through a relay.
+     *
+     * One, not zero: a path learned from a destination's own announce records `hops = 1`, and
+     * `hops > 1` is what puts an outbound packet on the HEADER_2 transport branch addressed to a
+     * next hop.
+     */
+    const val DIRECT_HOPS = 1
+
     /** Reverse table entry timeout in milliseconds (8 minutes). */
     const val REVERSE_TIMEOUT = 8L * 60 * 1000
 
@@ -154,6 +174,29 @@ object TransportConstants {
 
     /** Path unresponsive timeout in milliseconds (15 minutes). */
     const val PATH_UNRESPONSIVE_TIMEOUT = 15L * 60 * 1000
+
+    // ===== Fallback-interface tier (fork addition, not in Python/upstream) =====
+    // See Transport.arbitrateFallbackAdmission. Ported from reticulum-swift's PathTable.
+
+    /**
+     * How long (milliseconds) a destination's normal interfaces may go silent — no announce on any
+     * non-fallback interface — before a fallback (carrier) interface may take the route over.
+     *
+     * 75 s is ~2.5× a 30 s announce interval. It must exceed one interval plus slack: at ~1.5× a
+     * single late or dropped announce is enough to flip a live route onto the carrier and straight
+     * back, while 2.5× tolerates one whole missed announce.
+     */
+    const val FALLBACK_TAKEOVER_GRACE_MS = 75_000L
+
+    /**
+     * Age (milliseconds) past which a per-interface last-heard record is pruned.
+     *
+     * One hour is far above every window that reads the record — the 75 s takeover grace above and
+     * the ~120 s "peer nearby" window a dual-dispatch carrier copy would use — so pruning can never
+     * change a routing decision; it only bounds the map across a long session. Swift instead drops
+     * the records with the path row; age-based pruning keeps this fork's delta to one call site.
+     */
+    const val FALLBACK_LAST_HEARD_MAX_AGE_MS = 60L * 60 * 1000
 
     /** Base timeout for first hop in milliseconds (5 seconds). */
     const val FIRST_HOP_TIMEOUT_BASE = 5000L

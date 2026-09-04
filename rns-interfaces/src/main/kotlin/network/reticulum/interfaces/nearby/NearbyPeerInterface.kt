@@ -1,6 +1,7 @@
 package network.reticulum.interfaces.nearby
 
 import network.reticulum.interfaces.Interface
+import network.reticulum.common.RnsLog
 
 /**
  * Per-endpoint child interface for Nearby Connections.
@@ -73,7 +74,7 @@ class NearbyPeerInterface(
     }
 
     private fun log(message: String) {
-        println("[NearbyPeerInterface][$name] $message")
+        RnsLog.debug("NearbyPeerInterface") { "[NearbyPeerInterface][$name] $message" }
     }
 
     override fun toString(): String = "NearbyPeerInterface[$name]"

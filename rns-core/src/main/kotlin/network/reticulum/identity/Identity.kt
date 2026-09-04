@@ -14,6 +14,7 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.locks.ReentrantLock
+import network.reticulum.common.RnsLog
 
 /**
  * Identity is the core authentication primitive in Reticulum.
@@ -588,7 +589,7 @@ class Identity private constructor(
                 while (savingKnownDestinations) {
                     Thread.sleep(waitInterval)
                     if (System.currentTimeMillis() > waitStart + waitTimeout) {
-                        println("Could not save known destinations to storage, waiting for previous save operation timed out.")
+                        RnsLog.error("Identity") { "Could not save known destinations to storage, waiting for previous save operation timed out." }
                         return
                     }
                 }
@@ -657,7 +658,7 @@ class Identity private constructor(
                     }
                 }
 
-                println("Saving ${knownDestinations.size} known destinations to storage...")
+                RnsLog.debug("Identity") { "Saving ${knownDestinations.size} known destinations to storage..." }
 
                 // Serialize to msgpack
                 val buffer = java.io.ByteArrayOutputStream()
@@ -697,10 +698,10 @@ class Identity private constructor(
                 } else {
                     String.format("%.2fs", saveTime / 1000.0)
                 }
-                println("Saved known destinations to storage in $timeStr")
+                RnsLog.debug("Identity") { "Saved known destinations to storage in $timeStr" }
 
             } catch (e: Exception) {
-                println("Error while saving known destinations to disk: ${e.message}")
+                RnsLog.error("Identity") { "Error while saving known destinations to disk: ${e.message}" }
                 e.printStackTrace()
             } finally {
                 savingKnownDestinations = false
@@ -722,14 +723,14 @@ class Identity private constructor(
                     val identityHash = Hashes.truncatedHash(data.publicKey)
                     identityHashIndex[identityHash.toKey()] = destKey.bytes.copyOf()
                 }
-                println("Loaded ${loaded.size} known destinations from store")
+                RnsLog.debug("Identity") { "Loaded ${loaded.size} known destinations from store" }
                 return
             }
 
             val destFile = java.io.File(storagePath, "known_destinations")
 
             if (!destFile.exists()) {
-                println("Destinations file does not exist, no known destinations loaded")
+                RnsLog.debug("Identity") { "Destinations file does not exist, no known destinations loaded" }
                 return
             }
 
@@ -790,15 +791,15 @@ class Identity private constructor(
                         loadedCount++
                     } catch (e: Exception) {
                         // Skip corrupted entry
-                        println("Warning: Skipped corrupted entry in known_destinations: ${e.message}")
+                        RnsLog.warn("Identity") { "Warning: Skipped corrupted entry in known_destinations: ${e.message}" }
                     }
                 }
                 packer.close()
 
-                println("Loaded $loadedCount known destinations from storage")
+                RnsLog.debug("Identity") { "Loaded $loadedCount known destinations from storage" }
 
             } catch (e: Exception) {
-                println("Error loading known destinations from disk, file will be recreated on exit: ${e.message}")
+                RnsLog.error("Identity") { "Error loading known destinations from disk, file will be recreated on exit: ${e.message}" }
                 e.printStackTrace()
             }
         }
@@ -879,7 +880,7 @@ class Identity private constructor(
                     ratchetPersistLock.unlock()
                 }
             } catch (e: Exception) {
-                println("Could not persist ratchet for ${destHash.toHexString()}: ${e.message}")
+                RnsLog.error("Identity") { "Could not persist ratchet for ${destHash.toHexString()}: ${e.message}" }
             }
         }
 
@@ -963,7 +964,7 @@ class Identity private constructor(
 
                 // Validate ratchet
                 if (ratchet == null || ratchet!!.size != RnsConstants.KEY_SIZE) {
-                    println("Invalid ratchet data for ${destHash.toHexString()}")
+                    RnsLog.warn("Identity") { "Invalid ratchet data for ${destHash.toHexString()}" }
                     return null
                 }
 
@@ -987,7 +988,7 @@ class Identity private constructor(
 
                 return ratchet!!.copyOf()
             } catch (e: Exception) {
-                println("Error loading ratchet for ${destHash.toHexString()}: ${e.message}")
+                RnsLog.error("Identity") { "Error loading ratchet for ${destHash.toHexString()}: ${e.message}" }
                 return null
             }
         }
@@ -1053,7 +1054,7 @@ class Identity private constructor(
          * Should be called periodically to free memory and disk space.
          */
         fun cleanRatchets() {
-            println("Cleaning ratchets...")
+            RnsLog.debug("Identity") { "Cleaning ratchets..." }
             val now = System.currentTimeMillis()
 
             // Clean in-memory cache
@@ -1142,17 +1143,17 @@ class Identity private constructor(
 
                         if (isExpired || isCorrupted || unknown) {
                             if (isCorrupted) {
-                                println("Removing corrupted ratchet file: ${file.name}")
+                                RnsLog.debug("Identity") { "Removing corrupted ratchet file: ${file.name}" }
                             }
                             file.delete()
                         }
                     } catch (e: Exception) {
-                        println("Error reading ratchet file ${file.name}, removing: ${e.message}")
+                        RnsLog.error("Identity") { "Error reading ratchet file ${file.name}, removing: ${e.message}" }
                         file.delete()
                     }
                 }
             } catch (e: Exception) {
-                println("Error cleaning ratchets from disk: ${e.message}")
+                RnsLog.error("Identity") { "Error cleaning ratchets from disk: ${e.message}" }
             }
         }
     }

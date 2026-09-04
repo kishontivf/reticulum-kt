@@ -10,6 +10,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import network.reticulum.interfaces.Interface
+import network.reticulum.common.RnsLog
 
 /**
  * Per-peer BLE child interface with fragmentation, reassembly, and keepalive.
@@ -298,7 +299,7 @@ class BLEPeerInterface(
     }
 
     private fun log(message: String) {
-        println("[BLEPeerInterface][$name] $message")
+        RnsLog.debug("BLEPeerInterface") { "[BLEPeerInterface][$name] $message" }
     }
 
     override fun toString(): String = "BLEPeerInterface[$name]"

@@ -33,6 +33,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
+import network.reticulum.common.RnsLog
 
 /**
  * Callbacks for link events.
@@ -379,6 +380,15 @@ class Link private constructor(
             )
         }
 
+        /** Result holder for [buildInitiatorRequestDataForTest]. */
+        class InitiatorRequestDataForTest(
+            val requestData: ByteArray,
+            val pubBytes: ByteArray,
+            val sigPubBytes: ByteArray,
+            val mtu: Int,
+            val mode: Int,
+        )
+
         /**
          * Conformance test seam: build a genuine initiator LINKREQUEST payload
          * (pub_bytes || sig_pub_bytes || signalling_bytes) with freshly-generated
@@ -391,15 +401,6 @@ class Link private constructor(
          * the value a no-MTU-discovery next hop yields). No port logic — pure
          * read-only assembly for the link-request adversarial commands.
          */
-        /** Result holder for [buildInitiatorRequestDataForTest]. */
-        class InitiatorRequestDataForTest(
-            val requestData: ByteArray,
-            val pubBytes: ByteArray,
-            val sigPubBytes: ByteArray,
-            val mtu: Int,
-            val mode: Int,
-        )
-
         fun buildInitiatorRequestDataForTest(
             mode: Int = LinkConstants.MODE_DEFAULT,
         ): InitiatorRequestDataForTest {
@@ -413,12 +414,7 @@ class Link private constructor(
         }
 
         private fun log(message: String) {
-            val timestamp =
-                java.time.LocalDateTime.now().format(
-                    java.time.format.DateTimeFormatter
-                        .ofPattern("yyyy-MM-dd HH:mm:ss.SSS"),
-                )
-            println("[$timestamp] [Link] $message")
+            RnsLog.debug("Link") { "[Link] $message" }
         }
     }
 
@@ -1824,21 +1820,6 @@ class Link private constructor(
     }
 
     /**
-     * Receive and process an incoming packet on this link.
-     *
-     * This is the main packet processing method that handles all link traffic including:
-     * - Regular data packets
-     * - Keepalives
-     * - Link identification
-     * - RTT measurements
-     * - Resource advertisements and transfers
-     * - Requests and responses
-     * - Channel data
-     * - Link close packets
-     *
-     * @param packet The incoming packet to process
-     */
-    /**
      * Conformance test seam: a per-link tap invoked for every inbound packet at
      * the top of receive(), the kotlin equivalent of the reference bridge
      * monkey-patching link.receive to observe inbound RESPONSE / RESOURCE_ADV
@@ -1857,6 +1838,21 @@ class Link private constructor(
     @Volatile
     var proveTapForTest: ((Packet) -> Unit)? = null
 
+    /**
+     * Receive and process an incoming packet on this link.
+     *
+     * This is the main packet processing method that handles all link traffic including:
+     * - Regular data packets
+     * - Keepalives
+     * - Link identification
+     * - RTT measurements
+     * - Resource advertisements and transfers
+     * - Requests and responses
+     * - Channel data
+     * - Link close packets
+     *
+     * @param packet The incoming packet to process
+     */
     fun receive(packet: Packet) {
         inboundTapForTest?.let { tap -> runCatching { tap(packet) } }
         // Skip closed links, and skip initiator keepalive responses
@@ -2065,10 +2061,10 @@ class Link private constructor(
      */
     private fun processResponse(packet: Packet) {
         try {
-            println("[Link] processResponse: decrypting ${packet.data.size} bytes")
+            RnsLog.debug("Link") { "[Link] processResponse: decrypting ${packet.data.size} bytes" }
             val packedResponse = decrypt(packet.data)
             if (packedResponse == null) {
-                println("[Link] processResponse: decrypt returned null!")
+                RnsLog.debug("Link") { "[Link] processResponse: decrypt returned null!" }
                 return
             }
 
@@ -2115,10 +2111,10 @@ class Link private constructor(
             val transferSize = responseDataSize
 
             // Pass to handleResponse
-            println("[Link] processResponse: requestId=${requestId.joinToString("") { "%02x".format(it) }}, dataSize=$responseDataSize")
+            RnsLog.debug("Link") { "[Link] processResponse: requestId=${requestId.joinToString("") { "%02x".format(it) }}, dataSize=$responseDataSize" }
             handleResponse(requestId, responseData, responseDataSize, transferSize)
         } catch (e: Exception) {
-            println("[Link] processResponse EXCEPTION: ${e.message}")
+            RnsLog.debug("Link") { "[Link] processResponse EXCEPTION: ${e.message}" }
             e.printStackTrace()
         }
     }
@@ -3518,7 +3514,7 @@ class RequestReceipt(
                 try {
                     callback(this)
                 } catch (e: Exception) {
-                    println("[RequestReceipt] Error in progress callback: ${e.message}")
+                    RnsLog.error("Link") { "[RequestReceipt] Error in progress callback: ${e.message}" }
                 }
             }
         }
@@ -3528,7 +3524,7 @@ class RequestReceipt(
                 try {
                     callback(this)
                 } catch (e: Exception) {
-                    println("[RequestReceipt] Error in response callback: ${e.message}")
+                    RnsLog.error("Link") { "[RequestReceipt] Error in response callback: ${e.message}" }
                 }
             }
         }
@@ -3548,7 +3544,7 @@ class RequestReceipt(
                 try {
                     callback(this)
                 } catch (e: Exception) {
-                    println("[RequestReceipt] Error in failed callback: ${e.message}")
+                    RnsLog.error("Link") { "[RequestReceipt] Error in failed callback: ${e.message}" }
                 }
             }
         }
@@ -3570,7 +3566,7 @@ class RequestReceipt(
                 try {
                     callback(this)
                 } catch (e: Exception) {
-                    println("[RequestReceipt] Error in progress callback: ${e.message}")
+                    RnsLog.error("Link") { "[RequestReceipt] Error in progress callback: ${e.message}" }
                 }
             }
         }

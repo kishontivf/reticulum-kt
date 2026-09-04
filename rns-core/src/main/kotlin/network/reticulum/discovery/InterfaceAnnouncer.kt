@@ -18,6 +18,7 @@ import network.reticulum.transport.InterfaceRef
 import network.reticulum.transport.Transport
 import org.msgpack.core.MessagePack
 import java.io.ByteArrayOutputStream
+import network.reticulum.common.RnsLog
 
 /**
  * Periodically sends discovery announces for local interfaces.
@@ -95,7 +96,7 @@ class InterfaceAnnouncer {
     }
 
     private fun log(msg: String) {
-        println("[Discovery:Announcer] $msg")
+        RnsLog.debug("InterfaceAnnouncer") { "[Discovery:Announcer] $msg" }
     }
 
     fun getInterfaceAnnounceData(iface: InterfaceRef): ByteArray? {

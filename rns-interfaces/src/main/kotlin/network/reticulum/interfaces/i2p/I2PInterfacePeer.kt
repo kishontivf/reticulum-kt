@@ -22,6 +22,7 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import network.reticulum.common.RnsLog
 
 /**
  * I2P peer interface — handles a single I2P connection.
@@ -419,7 +420,7 @@ class I2PInterfacePeer(
         val timestamp = java.time.LocalDateTime.now().format(
             java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
         )
-        println("[$timestamp] [$name] $message")
+        RnsLog.debug("I2PInterfacePeer") { "[$name] $message" }
     }
 
     override fun toString(): String {

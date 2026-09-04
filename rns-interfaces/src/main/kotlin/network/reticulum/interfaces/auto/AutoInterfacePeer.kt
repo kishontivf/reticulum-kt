@@ -5,6 +5,7 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
 import java.util.concurrent.atomic.AtomicBoolean
+import network.reticulum.common.RnsLog
 
 /**
  * Represents a connection to a single discovered peer via UDP unicast.
@@ -107,7 +108,7 @@ class AutoInterfacePeer(
     }
 
     private fun log(message: String) {
-        println("[${System.currentTimeMillis()}] [$name] $message")
+        RnsLog.debug("AutoInterfacePeer") { "[${System.currentTimeMillis()}] [$name] $message" }
     }
 
     override fun toString(): String = "AutoInterfacePeer[$name -> $targetAddress]"

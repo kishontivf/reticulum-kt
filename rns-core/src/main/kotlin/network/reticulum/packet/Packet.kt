@@ -232,17 +232,17 @@ class Packet private constructor(
     }
 
     /**
-     * Get the hashable portion of the packet.
-     *
-     * For packet hash calculation, the transport_id is excluded for HEADER_2 packets,
-     * and only the lower 4 bits of the flags byte are used (masking header_type and context_flag).
-     */
-    /**
      * The packet hash: full SHA-256 of the hashable part, exactly python
      * Packet.get_hash (Packet.py:356-358) — stable across hops/transport_id.
      */
     fun getHash(): ByteArray = Hashes.fullHash(getHashablePart())
 
+    /**
+     * Get the hashable portion of the packet.
+     *
+     * For packet hash calculation, the transport_id is excluded for HEADER_2 packets,
+     * and only the lower 4 bits of the flags byte are used (masking header_type and context_flag).
+     */
     fun getHashablePart(): ByteArray {
         val packed = raw ?: pack()
 

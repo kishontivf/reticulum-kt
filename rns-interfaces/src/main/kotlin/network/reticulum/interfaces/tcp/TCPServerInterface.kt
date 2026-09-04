@@ -26,6 +26,7 @@ import java.net.SocketException
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import network.reticulum.common.RnsLog
 
 /**
  * TCP server interface for Reticulum.
@@ -297,7 +298,7 @@ class TCPServerInterface(
         val timestamp = java.time.LocalDateTime.now().format(
             java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
         )
-        println("[$timestamp] [$name] $message")
+        RnsLog.debug("TCPServerInterface") { "[$name] $message" }
     }
 
     override fun toString(): String = "TCPServerInterface[$name @ $bindAddress:$bindPort]"
@@ -456,7 +457,7 @@ class TCPServerClientInterface internal constructor(
         val timestamp = java.time.LocalDateTime.now().format(
             java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
         )
-        println("[$timestamp] [$name] $message")
+        RnsLog.debug("TCPServerInterface") { "[$name] $message" }
     }
 
     override fun toString(): String = "TCPServerClientInterface[$name]"

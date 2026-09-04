@@ -3,6 +3,7 @@ package network.reticulum.interfaces
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import network.reticulum.common.RnsLog
 import network.reticulum.common.ByteArrayKey
 import network.reticulum.common.InterfaceMode
 import network.reticulum.common.RnsConstants
@@ -181,7 +182,42 @@ abstract class Interface(
      * this, and doing so would fight with the owning subclass.
      */
     fun setOnline(value: Boolean) {
-        _online.value = value
+        connected = value
+
+        publishOnline()
+    }
+
+    /** What the interface itself reports: a socket that connected, a radio that came up. */
+    @Volatile
+    private var connected = false
+
+    /**
+     * Whether this interface is administratively enabled.
+     *
+     * Separate from [online], and above it: [online] is what the interface reports about itself,
+     * this is what an operator decided. A disabled interface reports offline however healthy its
+     * own connection is, which is what makes the two survive each other — a TCP client that
+     * reconnects while disabled calls [setOnline] on its way back up and still does not carry
+     * traffic.
+     *
+     * Everything follows from [online] going false: `Transport` skips an offline interface on every
+     * send path, and [processIncoming] drops what arrives on one. Re-enabling restores whatever the
+     * interface was reporting in the meantime, so nothing has to be reconnected by hand.
+     */
+    val isEnabled: Boolean get() = enabled
+
+    @Volatile
+    private var enabled = true
+
+    /** See [isEnabled]. Reversible, unlike [detach]. */
+    fun setEnabled(value: Boolean) {
+        enabled = value
+
+        publishOnline()
+    }
+
+    private fun publishOnline() {
+        _online.value = connected && enabled
     }
 
     /** Whether this interface has been detached (shutdown). */
@@ -471,7 +507,7 @@ abstract class Interface(
                 }.start()
             }
         } catch (e: Exception) {
-            System.err.println("An error occurred while processing held announces for $this: ${e.message}")
+            RnsLog.error("Interface", e) { "Failed to process held announces for $this" }
         }
     }
 

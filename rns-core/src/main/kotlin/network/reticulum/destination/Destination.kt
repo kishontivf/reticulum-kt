@@ -18,6 +18,7 @@ import java.nio.file.StandardCopyOption
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
+import network.reticulum.common.RnsLog
 
 /**
  * Request access control policy constants.
@@ -613,10 +614,10 @@ class Destination private constructor(
                     loadAttempt()
                 } catch (e: Exception) {
                     // Retry once after 500ms (matches Python I/O conflict handling)
-                    println("First ratchet reload attempt for $this failed. Retrying in 500ms.")
+                    RnsLog.error("Destination") { "First ratchet reload attempt for $this failed. Retrying in 500ms." }
                     Thread.sleep(500)
                     loadAttempt()
-                    println("Ratchet reload retry succeeded")
+                    RnsLog.debug("Destination") { "Ratchet reload retry succeeded" }
                 }
                 return true
             } catch (e: Exception) {
@@ -1149,7 +1150,7 @@ class Destination private constructor(
                 val ratchet = getRatchetForDestination(hash)
 
                 // Debug logging
-                println("[Destination] encrypt() for ${hash.toHexString()}: ratchet=${if (ratchet != null) "present (${ratchet.size} bytes)" else "null"}")
+                RnsLog.debug("Destination") { "[Destination] encrypt() for ${hash.toHexString()}: ratchet=${if (ratchet != null) "present (${ratchet.size} bytes)" else "null"}" }
 
                 // If a ratchet is available, store its ID for tracking
                 if (ratchet != null) {
@@ -1211,14 +1212,14 @@ class Destination private constructor(
                             network.reticulum.transport.Transport.destinationRatchetStore != null)
                     ) {
                         try {
-                            println("Decryption with ratchets failed on $this, reloading ratchets from storage and retrying")
+                            RnsLog.error("Destination") { "Decryption with ratchets failed on $this, reloading ratchets from storage and retrying" }
                             reloadRatchets()
                             plaintext = tryDecryptWithRatchets(id, ciphertext)
                             if (plaintext != null) {
-                                println("Decryption succeeded after ratchet reload")
+                                RnsLog.debug("Destination") { "Decryption succeeded after ratchet reload" }
                             }
                         } catch (e: Exception) {
-                            println("Decryption still failing after ratchet reload: ${e.message}")
+                            RnsLog.debug("Destination") { "Decryption still failing after ratchet reload: ${e.message}" }
                         }
                     }
 
@@ -1632,7 +1633,7 @@ class Destination private constructor(
             val cachedData = getCachedPathResponse(tag)
             if (cachedData != null) {
                 // Use cached announce data for multi-path support
-                println("Using cached announce data for path response with tag ${tag.toHexString()}")
+                RnsLog.debug("Destination") { "Using cached announce data for path response with tag ${tag.toHexString()}" }
                 announceData = cachedData
                 // Determine hasRatchet from cached data - if ratchets are enabled, assume it has one
                 hasRatchet = ratchetsEnabled && ratchets.isNotEmpty()

@@ -9,6 +9,7 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.security.MessageDigest
 import java.util.Base64
+import network.reticulum.common.RnsLog
 
 /**
  * SAM (Simple Anonymous Messaging) v3.1 protocol client for I2P.
@@ -268,7 +269,7 @@ class SamConnection(val socket: Socket) : Closeable {
     fun readReply(): SamReply {
         val line = reader.readLine()
             ?: throw SamException("SAM connection closed unexpectedly")
-        println("[SAM] << $line")
+        RnsLog.debug("I2PSamClient") { "[SAM] << $line" }
         return SamReply.parse(line)
     }
 

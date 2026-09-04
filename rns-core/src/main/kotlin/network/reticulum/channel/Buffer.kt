@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 import kotlin.concurrent.thread
+import network.reticulum.common.RnsLog
 
 /**
  * Stream data message for transmitting binary data over a Channel.
@@ -196,11 +197,11 @@ class RawChannelReader(
                             try {
                                 listener(bufferSize)
                             } catch (ex: Exception) {
-                                println("Error calling RawChannelReader($streamId) callback: ${ex.message}")
+                                RnsLog.error("Buffer") { "Error calling RawChannelReader($streamId) callback: ${ex.message}" }
                             }
                         }
                     } catch (ex: Exception) {
-                        println("Error starting RawChannelReader($streamId) callback thread: ${ex.message}")
+                        RnsLog.error("Buffer") { "Error starting RawChannelReader($streamId) callback thread: ${ex.message}" }
                     }
                 }
             }

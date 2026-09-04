@@ -24,6 +24,7 @@ import java.io.OutputStream
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import network.reticulum.common.RnsLog
 
 /**
  * Bluetooth Classic SPP (Serial Port Profile) interface for Reticulum.
@@ -396,7 +397,7 @@ class SppInterface(
         val timestamp = java.time.LocalDateTime.now().format(
             java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
         )
-        println("[$timestamp] [$name] $message")
+        RnsLog.debug("SppInterface") { "[$name] $message" }
     }
 
     private fun debugLog(message: String) {
@@ -404,7 +405,7 @@ class SppInterface(
             val timestamp = java.time.LocalDateTime.now().format(
                 java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
             )
-            println("[$timestamp] [$name] [DEBUG] $message")
+            RnsLog.debug("SppInterface") { "[$name] [DEBUG] $message" }
         }
     }
 

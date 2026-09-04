@@ -342,3 +342,17 @@ With the `registerInterface` widening above, kotlin clients now pack `HEADER_2` 
 A residual narrow TOCTOU remains between `doAdvertise()`'s guard and the subsequent `link.registerOutgoingResource(this)`: a `cancel()` interleaved there can be overwritten by the trailing `status = ADVERTISED`. **This race is present in upstream python verbatim** (python has neither the pre-guard nor any lock, so its window is strictly wider). A `synchronized`/check-after-register-and-rollback fix would introduce atomicity python does not have — i.e. a behavioral divergence — so per the honesty rule it is **deliberately not added**. Matching python's concurrency semantics (down to its bugs) is the correct posture for the conformance port; the upstream fix belongs in RNS first.
 
 **Re-evaluation:** if upstream RNS adds a lock/guard around `__advertise_job`'s register+status-advance (closing the race in python), port that exact structure here and drop the "deliberately not added" note. Until then, do not unilaterally diverge.
+
+### Fallback-interface tier: embedder-nominated low-priority interfaces, per-destination pin, last-heard liveness — `rns-core/.../Transport.kt::setFallbackInterface`, `setDestinationPinnedToFallback`, `wasHeardOnInterface`, `arbitrateFallbackAdmission`, `processAnnounce`
+
+**Python reference:** none — `RNS/Transport.py:1604-1686` (the 5-path announce admission tree) has no notion of interface priority tiers; python ranks candidates by hop count and announce freshness only.
+
+**Category:** new feature.
+
+**Date:** 2026-08-28.
+
+**Tracking:** ported from `reticulum-swift`'s `PathTable` (the `kishontivf` fork the iOS app routes with), so iOS↔Android and Android↔Android carrier selection agree.
+
+**Description:** An embedder can nominate interfaces (by name) as low-priority *fallback* links — an app's virtual BLE carrier, a direct 1-hop link that would otherwise out-rank every real route on hop count. `processAnnounce` consults `arbitrateFallbackAdmission` before the python admission tree: a normal-interface announce unconditionally reclaims a destination held by a fallback interface (PROMOTE); a fallback announce is rejected while the incumbent normal route is live — its interface online, or a normal-interface announce heard within `FALLBACK_TAKEOVER_GRACE_MS`, or the entry younger than that grace — unless the path is marked unresponsive by delivery failures; a destination pinned via `setDestinationPinnedToFallback` rejects all normal-interface announces outright, and a pin rejection deliberately does not record last-heard. Every other arrival records per-destination, per-interface last-heard wall-clock time (before any duplicate/freshness rejection — a suppressed carrier must still count as heard), pruned by age from `cullTables`. **With no fallback interface registered — the default, and the state of every pure-python-parity deployment — every announce takes the UNDECIDED branch and admission is byte-for-byte the python tree**; the tier only changes semantics for embedders that opt in.
+
+**Re-evaluation:** if upstream RNS ever grows interface priorities or a comparable liveness-aware tier, reconcile with that structure. If `reticulum-swift`'s `PathTable.record()` fallback branches change, mirror them here — the two forks must agree for cross-platform routing.

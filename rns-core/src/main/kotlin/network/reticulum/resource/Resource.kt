@@ -21,6 +21,7 @@ import kotlin.concurrent.thread
 import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
+import network.reticulum.common.RnsLog
 
 /**
  * Callbacks for resource transfer events.
@@ -215,7 +216,7 @@ class Resource private constructor(
             val timestamp = java.time.LocalDateTime.now().format(
                 java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
             )
-            println("[$timestamp] [Resource] $message")
+            RnsLog.debug("Resource") { "[Resource] $message" }
         }
     }
 

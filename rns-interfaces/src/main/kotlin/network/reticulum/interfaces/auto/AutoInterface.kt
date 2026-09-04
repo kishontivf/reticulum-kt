@@ -2,6 +2,7 @@ package network.reticulum.interfaces.auto
 
 import kotlinx.coroutines.*
 import network.reticulum.crypto.Hashes
+import network.reticulum.common.RnsLog
 import network.reticulum.interfaces.Interface
 import network.reticulum.interfaces.toRef
 import network.reticulum.transport.Transport
@@ -802,7 +803,7 @@ class AutoInterface(
                 .now()
                 .toString()
                 .take(12)
-        val logMessage = "[$timestamp] [$name] $message"
+        val logMessage = "[$name] $message"
 
         // Try Android logging first
         try {
@@ -826,8 +827,9 @@ class AutoInterface(
                         .invoke(null, "AutoInterface", logMessage)
             }
         } catch (e: Exception) {
-            // Fall back to println for non-Android platforms
-            println(logMessage)
+            // The sink reaches the host on every platform, which is what the reflection above was
+            // reaching for in the first place.
+            RnsLog.debug("AutoInterface") { logMessage }
         }
     }
 

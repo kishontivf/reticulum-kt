@@ -27,6 +27,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
+import network.reticulum.common.RnsLog
 
 /**
  * Local server interface for shared daemon IPC.
@@ -439,7 +440,7 @@ class LocalServerInterface : Interface {
         val timestamp = java.time.LocalDateTime.now().format(
             java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
         )
-        println("[$timestamp] [$name] $message")
+        RnsLog.debug("LocalServerInterface") { "[$name] $message" }
     }
 
     override fun toString(): String {
