@@ -201,12 +201,20 @@ class Resource private constructor(
          */
         fun reject(advertisement: ResourceAdvertisement, link: Link) {
             try {
-                val rejectPacket = Packet.createRaw(
-                    destinationHash = advertisement.hash,
-                    data = advertisement.hash,
-                    context = PacketContext.RESOURCE_RCL
-                )
-                link.send(rejectPacket.raw ?: ByteArray(0))
+                // python Resource.py:156-166 — the RESOURCE_RCL goes over the link
+                // with the resource hash as its data, built like cancel()'s
+                // RESOURCE_ICL. The sender (processResourceRcl) decrypts the data and
+                // reads the first 16 bytes as the resource hash.
+                val rejectPacket =
+                    Packet.createRaw(
+                        destinationHash = link.linkId,
+                        data = link.encrypt(advertisement.hash),
+                        packetType = PacketType.DATA,
+                        destinationType = DestinationType.LINK,
+                        context = PacketContext.RESOURCE_RCL,
+                        mtu = link.mtu,
+                    )
+                rejectPacket.send()
             } catch (e: Exception) {
                 log("Error rejecting resource: ${e.message}")
             }
@@ -1470,13 +1478,15 @@ class Resource private constructor(
             }
         }
         if (!transitionedToFailed) return
-        // python Resource.py:1087-1094 — when the INITIATOR cancels a still-ACTIVE
-        // transfer it sends a RESOURCE_ICL packet carrying the resource hash so the
-        // receiver tears its inbound resource down too. Without this the receiver's
-        // inbound Resource is never told and lingers in TRANSFERRING. The receiver
-        // (processResourceIcl) decrypts the data and reads the first 16 bytes as the
-        // resource hash, so encrypt the hash to the link exactly like advertise().
-        if (initiator && link.status == LinkConstants.ACTIVE) {
+        // python Resource.py:1103-1116 — on a still-ACTIVE link, a cancelling
+        // INITIATOR sends RESOURCE_ICL so the receiver tears its inbound resource
+        // down, and a cancelling RECEIVER sends RESOURCE_RCL so the sender ends its
+        // outbound one. Without this the other side is never told and lingers in
+        // TRANSFERRING. Both carry the resource hash; the other side
+        // (processResourceIcl / processResourceRcl) decrypts the data and reads the
+        // first 16 bytes as the hash, so encrypt it to the link exactly like advertise().
+        if (link.status == LinkConstants.ACTIVE) {
+            val context = if (initiator) PacketContext.RESOURCE_ICL else PacketContext.RESOURCE_RCL
             try {
                 val cancelPacket =
                     Packet.createRaw(
@@ -1484,7 +1494,7 @@ class Resource private constructor(
                         data = link.encrypt(hash),
                         packetType = PacketType.DATA,
                         destinationType = DestinationType.LINK,
-                        context = PacketContext.RESOURCE_ICL,
+                        context = context,
                         mtu = link.mtu,
                     )
                 cancelPacket.send()
