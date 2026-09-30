@@ -4526,6 +4526,13 @@ object Transport {
                 val pktIfaceHash = packet.receivingInterfaceHash
                 if (attachedHash != null && pktIfaceHash != null && !attachedHash.contentEquals(pktIfaceHash)) {
                     log("WARNING: Link interface mismatch on ${packet.destinationHash.toHexString()}, potential communication manipulation or misconfiguration")
+                    // Python Transport.py:2586-2594: forget this packet's hash so the
+                    // copy that arrives on the link's own interface is not filtered as
+                    // a duplicate. Our peers send one packet over several connections
+                    // at once, so the first copy is often on the wrong one.
+                    val packetHashKey = packet.packetHash.toKey()
+                    packetHashlist.remove(packetHashKey)
+                    packetHashlistPrev.remove(packetHashKey)
                     continue
                 }
                 try {
