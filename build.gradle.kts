@@ -8,7 +8,7 @@ plugins {
 
 allprojects {
     group = "com.github.kishontivf.reticulum-kt"
-    version = System.getenv("VERSION")?.removePrefix("v") ?: "0.2.1"
+    version = System.getenv("VERSION")?.removePrefix("v") ?: "0.2.2"
 }
 
 dependencies {
