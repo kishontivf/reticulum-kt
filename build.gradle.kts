@@ -1,14 +1,14 @@
 plugins {
     kotlin("jvm") version "2.3.0" apply false
     kotlin("plugin.serialization") version "2.3.0" apply false
-    id("com.android.library") version "9.1.0" apply false
-    id("com.google.devtools.ksp") version "2.3.6" apply false
-    id("org.jetbrains.kotlinx.kover") version "0.7.6"
+    id("com.android.library") version "9.4.1" apply false
+    id("com.google.devtools.ksp") version "2.3.11" apply false
+    id("org.jetbrains.kotlinx.kover") version "0.9.11"
 }
 
 allprojects {
     group = "com.github.kishontivf.reticulum-kt"
-    version = System.getenv("VERSION")?.removePrefix("v") ?: "0.2.0"
+    version = System.getenv("VERSION")?.removePrefix("v") ?: "0.2.1"
 }
 
 dependencies {
