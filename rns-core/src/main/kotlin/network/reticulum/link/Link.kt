@@ -2453,6 +2453,14 @@ class Link private constructor(
                 return
             }
 
+            // A copy of a request packet already served is dropped, as python Link.receive
+            // does (Link.py:1091-1096) "in order to avoid sequencing errors". Transport's
+            // packet hashlist skips RESOURCE_REQ, so this is the only place that drops a copy.
+            if (!resource.registerRequestHash(packet.packetHash)) {
+                log("Ignoring repeated request for resource ${resourceHash.toHexString()}")
+                return
+            }
+
             // Process the request - send requested parts
             log("Processing request for resource ${resourceHash.toHexString()}")
             resource.handleRequest(plaintext)

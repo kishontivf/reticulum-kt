@@ -15,6 +15,7 @@ import java.security.SecureRandom
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.locks.ReentrantLock
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream
 import kotlin.concurrent.thread
@@ -267,7 +268,16 @@ class Resource private constructor(
     private var receivedCount: Int = 0
     private var outstandingParts: Int = 0
     private var consecutiveCompletedHeight: Int = -1
-    private var sentParts: Int = 0
+
+    /**
+     * Number of distinct parts this sender has sent so far.
+     *
+     * Each part counts once, however often the receiver asks for it again. It moves on every
+     * part request the receiver makes, so a caller can tell a transfer that is still moving
+     * from one that has stopped. Zero on a receiver.
+     */
+    var sentParts: Int = 0
+        private set
     private val sentPartsSet = mutableSetOf<Int>()
 
     // Segmenting
@@ -310,6 +320,10 @@ class Resource private constructor(
 
     // Timing
     private var rtt: Long? = null
+
+    // Written on the receiving thread and read by the watchdog and by callers on other threads,
+    // so @Volatile for the same reason as `status`: python's GIL gives that visibility for free.
+    @Volatile
     private var lastActivity: Long = System.currentTimeMillis()
     private var lastPartSent: Long = 0
     private var startedTransferring: Long? = null
@@ -340,6 +354,18 @@ class Resource private constructor(
     // Sender-side tracking
     private var receiverMinConsecutiveHeight: Int = 0
     private var advSent: Long = 0
+
+    // The hash of every part request packet this sender has served, so a copy of one is
+    // dropped. Python keeps the same list, `self.req_hashlist` (Resource.py:380), and checks
+    // it in Link.receive (Link.py:1091-1096). Hex strings, because a ByteArray in a set is
+    // compared by reference.
+    private val servedRequestHashes = mutableSetOf<String>()
+
+    // Part requests waiting to be served, and the lock of the thread serving them. One
+    // thread serves a Resource's requests, one at a time, in the order they arrived. See
+    // handleRequest and port-deviations.md.
+    private val pendingRequests = ArrayDeque<ByteArray>()
+    private val requestLock = ReentrantLock()
 
     // Watchdog
     private var watchdogThread: Thread? = null
@@ -897,10 +923,80 @@ class Resource private constructor(
     }
 
     /**
-     * Handle a request for parts from the receiver.
-     * Matches Python RNS request() protocol.
+     * Records the hash of a part request packet, so a copy of that packet can be dropped.
+     *
+     * Matches the guard in python `Link.receive` (Link.py:1091-1096): a request whose packet
+     * hash was seen before is not served again. A receiver that asks again sends a new packet
+     * with a new hash, so that request is served. [Link.processResourceReq] calls this before
+     * [handleRequest]. Transport's packet hashlist skips `RESOURCE_REQ`, so nothing else drops
+     * a copy.
+     *
+     * @param packetHash the full hash of the request packet.
+     * @return true when the packet is new. False when a packet with this hash was recorded
+     *   before.
+     */
+    fun registerRequestHash(packetHash: ByteArray): Boolean =
+        synchronized(servedRequestHashes) { servedRequestHashes.add(packetHash.toHexString()) }
+
+    /**
+     * Handles a part request from the receiver.
+     *
+     * Matches python `Resource.request` (Resource.py:994-1088) with one difference: the
+     * requests for this Resource are served one at a time, in the order they arrived. A request
+     * that arrives while another is being served waits in [pendingRequests]. The thread serving
+     * that one serves it next. Python needs no queue, because one thread handles every packet
+     * of an interface. Here link packets arrive on several threads. Two copies of one hashmap
+     * request served at once read `receiverMinConsecutiveHeight` at different times. The later
+     * one lands on the wrong part index and cancels the transfer with a sequencing error. The
+     * caller never waits for the lock. It may hold Transport's jobs lock, which the serving
+     * thread needs back after every send. See port-deviations.md.
+     *
+     * @param data the decrypted request: a flag byte, the last known map hash when the flag is
+     *   [ResourceConstants.HASHMAP_IS_EXHAUSTED], the resource hash, then the map hash of each
+     *   wanted part.
      */
     fun handleRequest(data: ByteArray) {
+        synchronized(pendingRequests) { pendingRequests.addLast(data) }
+        servePendingRequests()
+    }
+
+    /**
+     * Serves every request in [pendingRequests], unless another thread is already serving.
+     *
+     * The serving thread looks at the queue again after it releases [requestLock]. A request
+     * added between its last poll and that release is served by whichever of the two threads
+     * takes the lock next. So no request is left waiting.
+     */
+    private fun servePendingRequests() {
+        while (true) {
+            if (!requestLock.tryLock()) return
+
+            try {
+                while (true) {
+                    val request = synchronized(pendingRequests) { pendingRequests.removeFirstOrNull() } ?: break
+
+                    try {
+                        serveRequest(request)
+                    } catch (e: Exception) {
+                        log("Error serving resource request: ${e.message}")
+                    }
+                }
+            } finally {
+                requestLock.unlock()
+            }
+
+            if (synchronized(pendingRequests) { pendingRequests.isEmpty() }) return
+        }
+    }
+
+    /**
+     * Serves one part request. Matches python `Resource.request` (Resource.py:994-1088).
+     *
+     * Only [servePendingRequests] calls it, so no two run at once for one Resource.
+     *
+     * @param data the decrypted request, as [handleRequest] takes it.
+     */
+    private fun serveRequest(data: ByteArray) {
         if (status == ResourceConstants.FAILED) return
 
         // Calculate RTT
@@ -1526,6 +1622,17 @@ class Resource private constructor(
         get() = if (parts.isEmpty()) 0f else receivedCount.toFloat() / parts.size
 
     /**
+     * When this Resource last sent or received something, in epoch milliseconds.
+     *
+     * Set when the Resource is made, when it advertises, and whenever it sends or receives a part
+     * or a hashmap update. A receiver also sets it when it sends a part request. The watchdog
+     * measures idle time from here. A Resource waiting in [ResourceConstants.QUEUED] does not
+     * move it until it advertises.
+     */
+    val lastActivityAt: Long
+        get() = lastActivity
+
+    /**
      * Update hashmap from received data.
      */
     private fun updateHashmap(startIndex: Int, hashmapData: ByteArray) {
@@ -1764,8 +1871,17 @@ class Resource private constructor(
     /** private waitingForHmu flag. */
     fun waitingForHmuForTest(): Boolean = waitingForHmu
 
-    /** private sentParts (sender). */
+    /** Same as [sentParts]. Kept for the conformance bridge. */
     fun sentPartsForTest(): Int = sentParts
+
+    /**
+     * Moves [lastActivityAt] into the past, so a test need not wait for an idle timeout.
+     *
+     * @param by how far into the past, in milliseconds.
+     */
+    fun backdateActivityForTest(by: Long) {
+        lastActivity -= by
+    }
 
     /** sorted copy of the private sentPartsSet (sender). */
     fun sentPartIndicesForTest(): List<Int> = sentPartsSet.toList().sorted()
