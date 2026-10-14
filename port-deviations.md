@@ -356,3 +356,35 @@ A residual narrow TOCTOU remains between `doAdvertise()`'s guard and the subsequ
 **Description:** An embedder can nominate interfaces (by name) as low-priority *fallback* links — an app's virtual BLE carrier, a direct 1-hop link that would otherwise out-rank every real route on hop count. `processAnnounce` consults `arbitrateFallbackAdmission` before the python admission tree: a normal-interface announce unconditionally reclaims a destination held by a fallback interface (PROMOTE); a fallback announce is rejected while the incumbent normal route is live — its interface online, or a normal-interface announce heard within `FALLBACK_TAKEOVER_GRACE_MS`, or the entry younger than that grace — unless the path is marked unresponsive by delivery failures; a destination pinned via `setDestinationPinnedToFallback` rejects all normal-interface announces outright, and a pin rejection deliberately does not record last-heard. Every other arrival records per-destination, per-interface last-heard wall-clock time (before any duplicate/freshness rejection — a suppressed carrier must still count as heard), pruned by age from `cullTables`. **With no fallback interface registered — the default, and the state of every pure-python-parity deployment — every announce takes the UNDECIDED branch and admission is byte-for-byte the python tree**; the tier only changes semantics for embedders that opt in.
 
 **Re-evaluation:** if upstream RNS ever grows interface priorities or a comparable liveness-aware tier, reconcile with that structure. If `reticulum-swift`'s `PathTable.record()` fallback branches change, mirror them here — the two forks must agree for cross-platform routing.
+
+### Sender progress accessors `sentParts` and `lastActivityAt`, and `@Volatile lastActivity` — `rns-core/.../resource/Resource.kt::sentParts`, `::lastActivityAt`, `::lastActivity`
+
+**Python reference:** `RNS/Resource.py:436` (`self.sent_parts = 0`) and `:491, :546, :599, :846, :982` (`self.last_activity = time.time()`). Both are plain instance attributes. Python has no private members, so any caller can read them.
+
+**Category:** new feature (the read access); language/runtime forced (`@Volatile`).
+
+**Date:** 2026-10-13.
+
+**Tracking:** LXMF-kt's stall rule, entry "The stall rule, measured by inactivity" in `LXMF-kt-kishontivf/port-deviations.md`. Seen in the Analog app on a Pixel 8 Pro sending to a Pixel 10 Pro over Bluetooth.
+
+**Description:** `sentParts` was a private counter and `lastActivity` a private timestamp. A caller could reach the count only through the conformance seam `sentPartsForTest`, and the timestamp not at all. LXMF-kt's router needs the timestamp to tell a slow transfer from a dead one. `sentParts` is now a public property with a private setter. `lastActivityAt` is a public read-only view of `lastActivity`. Nothing writes either from outside, and no code path changes. `sentPartsForTest` stays for the conformance bridge and reads the same field. `lastActivity` is `@Volatile`: it is written on the receiving thread, and now read from the LXMF router's thread as well as the watchdog's. The JVM gives a plain `Long` neither visibility nor atomicity across threads. Python's GIL gives both for free. The test seam `backdateActivityForTest` moves it into the past for a test.
+
+**Re-evaluation:** none needed. If python ever makes these attributes private, drop the accessors with it.
+
+### Part requests served one at a time per Resource, through a queue — `rns-core/.../resource/Resource.kt::handleRequest`, `::servePendingRequests`, `::serveRequest`, `::pendingRequests`, `::requestLock`
+
+**Python reference:** `RNS/Resource.py:994-1088` (`request`) and `RNS/Link.py:1081-1096` (the `RESOURCE_REQ` branch of `Link.receive`). Python's `request` has no lock. It runs on the thread that reads the interface the link is attached to. That thread handles one packet at a time. So two requests for one Resource never run at once. `Link.receive` also drops a request packet whose hash is in `resource.req_hashlist`, "in order to avoid sequencing errors".
+
+**Category:** language/runtime forced.
+
+**Date:** 2026-10-14.
+
+**Tracking:** Seen in the Analog app on a Pixel 8 Pro sending a 212-part photo over Bluetooth. Three copies of one hashmap request arrived within 31 ms, two of them logged "Resource sequencing error, cancelling transfer!", and the photo took 17 tries.
+
+**Description:** `serveRequest` is python's `request`, line for line. It reads `receiverMinConsecutiveHeight` twice: once for the search scope, and again as the base of `part_index` after the parts went out. The two reads agree in python, because nothing else runs in between. In kotlin, link packets arrive on several threads. `Transport.transmit` releases `jobsLock` around every interface write (see the `transmit()` deviation above). So a second copy of a request can enter `handleRequest` while the first is still sending parts. At the second hashmap boundary the first copy moves the height from 0 to 72. The second copy has already taken its search scope from 0, counts from 72, lands on 220 instead of 148, fails the `% HASHMAP_MAX_LEN` check, and cancels the transfer. The first boundary is safe, because the height stays 0 there.
+
+`handleRequest` now puts the request in `pendingRequests` and calls `servePendingRequests`. That takes `requestLock` with `tryLock`, serves every queued request in arrival order, releases the lock, and returns once the queue is empty. A thread that finds the lock taken returns at once. The thread holding the lock looks at the queue again after releasing it, so the request left behind is served next. The caller never blocks on the lock, and that matters. An inbound thread calls `handleRequest` while holding `jobsLock`. The serving thread needs `jobsLock` back after each interface write. A blocking lock would deadlock the two. The result is python's order: one request at a time per Resource, none dropped, none run together. The queue is the kotlin stand-in for python's single interface thread.
+
+The `req_hashlist` guard was missing from the port, and is restored at the same time. It is not a deviation. `Resource.registerRequestHash` holds the hash set. `Link.processResourceReq` drops a request whose packet hash it has seen, as `Link.receive` does in python. Transport's packet hashlist skips `RESOURCE_REQ` in both ports. A receiver that asks again sends a new packet with a new hash, so that request is served. Only a byte-for-byte copy of a packet is dropped. The set and the check-and-add are `synchronized`, because two copies can reach the check on two threads at once.
+
+**Re-evaluation:** if upstream RNS adds a lock or a queue to `Resource.request`, port that structure and drop the queue here. If upstream drops `req_hashlist`, drop `registerRequestHash` with it.
