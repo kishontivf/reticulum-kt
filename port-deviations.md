@@ -388,3 +388,33 @@ A residual narrow TOCTOU remains between `doAdvertise()`'s guard and the subsequ
 The `req_hashlist` guard was missing from the port, and is restored at the same time. It is not a deviation. `Resource.registerRequestHash` holds the hash set. `Link.processResourceReq` drops a request whose packet hash it has seen, as `Link.receive` does in python. Transport's packet hashlist skips `RESOURCE_REQ` in both ports. A receiver that asks again sends a new packet with a new hash, so that request is served. Only a byte-for-byte copy of a packet is dropped. The set and the check-and-add are `synchronized`, because two copies can reach the check on two threads at once.
 
 **Re-evaluation:** if upstream RNS adds a lock or a queue to `Resource.request`, port that structure and drop the queue here. If upstream drops `req_hashlist`, drop `registerRequestHash` with it.
+
+### Interfaces a destination was heard on, with hop counts, and route listeners — `rns-core/.../transport/Transport.kt::heardInterfaces`, `::addRouteListener`, `::removeRouteListener`, `::processAnnounce`, `InterfaceSighting.kt`, `RouteListener.kt`
+
+**Python reference:** none. `RNS/Transport.py` keeps one path for each destination in `path_table`. The announce admission tree (`Transport.py:1604-1686`) drops every announce that loses the ranking, and nothing remembers the interface it came in on. Python has no listener for a path change either. An announce handler is called only for an announce that was added to the path table.
+
+**Category:** new feature.
+
+**Date:** 2026-11-23.
+
+**Tracking:** ported from `reticulum-swift`'s `PathTable`. See its `port-deviations.md` entry "`PathTable.lastHeardByInterface` carries hop count + `heardInterfaces(for:)` reader". Released as 0.3.0.
+
+**Description:** `Transport` keeps a map `lastHeardByInterface`. For each destination it holds the last announce heard on each interface, as an `InterfaceSighting`. A sighting has the arrival time in epoch milliseconds and the hop count as `PathEntry.hops` would hold it. A destination that announced to this node directly has 1. One behind a local shared instance has 0. The interface is keyed by its hash, the same value as `PathEntry.receivingInterfaceHash`, so a caller can match a sighting to the path in use. `Transport.heardInterfaces(destinationHash)` returns a copy of one destination's map.
+
+`processAnnounce` writes the sighting. It writes it after `validateAnnounce` passed, so an announce with a wrong signature is never recorded. It writes it before every check that can keep the announce out of the path table. Those checks are the fallback tier, a random blob seen before, an older emission time, a worse hop count and the `PATHFINDER_M` hop limit. So an announce that loses the ranking is still recorded. A path response is an announce, and is recorded like any other. When the announce does store a path, `processAnnounce` writes the sighting a second time after the store. Another thread may have dropped the old path, and its sightings, between the two. Three kinds of valid announce are not recorded:
+
+- An announce held by ingress limiting. It is recorded when `Interface.processHeldAnnounces` feeds it back in.
+- An announce for one of this node's own destinations.
+- An announce that the pin rejected (`setDestinationPinnedToFallback`). reticulum-swift does the same. A transport node may still relay the old route of a pinned peer, and that copy does not show the peer is there.
+
+The packet filter needed no change. `packetFilter` lets a second copy of a SINGLE announce through, as python's `packet_filter` does (`Transport.py:1227-1238`). So the same announce arriving on a second interface reaches `processAnnounce` and is recorded there.
+
+A destination's sightings are removed when its path is removed. That happens in `expirePath`, `expirePathOn`, `expireDeadPaths`, `removeBlackholedPaths`, the stale path branch of `processOutbound`, and `cullTables`. Each of them drops the sightings only if the destination has no path at that moment. The check and the removal are one `computeIfPresent` step, so an announce that stores a new path at the same time keeps its sighting. `stop` clears the map. `pathTable` is public, and an announce over the hop limit is recorded without a path. So `cullTables` also drops the sightings of every destination that has no path. After a cull the map is no larger than the path table. A sighting has no age limit of its own. The map is in memory only. It is never saved, so nothing changes in the stored path table or in `PathStore`.
+
+`Transport.addRouteListener` registers a `RouteListener`. Its `onRouteChanged(destinationHash)` is called after a sighting was stored, after a path was stored by an announce or restored from a tunnel, and after a path was dropped. It is not called when `stop` clears the tables. A path that a caller takes out of the public `pathTable` gives a call at the next cull, and only if the destination had sightings. The calls run on one thread that `Transport` keeps for them. So no caller's lock is held during a call, `jobsLock` included. A listener that throws is logged, and the next listener still runs. A destination that is already waiting for its call is not queued again, so several changes in quick succession may give one call. Listeners stay registered across `stop` and `start`.
+
+This is separate from `fallbackLastHeard`, the map of the fallback tier above. That map is keyed by interface name, holds a time only, and is pruned by age. The takeover rule reads it, and it is unchanged. reticulum-swift keeps both in one map.
+
+The path ranking, the announce rebroadcast and what is saved to disk are unchanged. The cost is one small map entry for each announce, and one more thread while `Transport` runs.
+
+**Re-evaluation:** if upstream RNS starts to remember losing announces by interface, or adds a path change callback, move to that structure. If `reticulum-swift`'s `PathTable.record()` changes when it records a sighting, mirror it here, because both apps show the same list of links.
