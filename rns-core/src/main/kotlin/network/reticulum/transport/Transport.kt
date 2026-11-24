@@ -484,6 +484,11 @@ object Transport {
                 Thread(r, "PacketReceipt-callbacks").apply { isDaemon = true }
             }
 
+        routeListenerExecutor =
+            java.util.concurrent.Executors.newSingleThreadExecutor { task ->
+                Thread(task, ROUTE_LISTENER_THREAD_NAME).apply { isDaemon = true }
+            }
+
         identity = transportIdentity ?: Identity.create()
         transportEnabled = enableTransport
         startTime = System.currentTimeMillis()
@@ -577,6 +582,7 @@ object Transport {
         fallbackInterfaceNames.clear()
         fallbackPinnedDestinations.clear()
         fallbackLastHeard.clear()
+        lastHeardByInterface.clear()
         linkTable.clear()
         reverseTable.clear()
         announceTable.clear()
@@ -623,6 +629,12 @@ object Transport {
         // callbacks that have been submitted but not yet started are dropped.
         receiptCallbackExecutor?.shutdownNow()
         receiptCallbackExecutor = null
+
+        // Route listeners (fork addition): calls that have not started are dropped. The listeners
+        // themselves stay registered, because the caller that added one also removes it.
+        routeListenerExecutor?.shutdownNow()
+        routeListenerExecutor = null
+        pendingRouteNotifications.clear()
 
         log("Transport stopped")
     }
@@ -1455,7 +1467,10 @@ object Transport {
             findInterfaceByHash(entry.receivingInterfaceHash)?.online != true
         }
 
-        dead.keys.forEach(pathTable::remove)
+        dead.keys.forEach { key ->
+            pathTable.remove(key)
+            forgetHeardInterfaces(key)
+        }
 
         if (dead.isNotEmpty()) log("Dropped ${dead.size} path(s) whose interface is not carrying traffic")
 
@@ -1480,6 +1495,7 @@ object Transport {
         if (!entry.receivingInterfaceHash.contentEquals(interfaceHash)) return false
 
         pathTable.remove(key)
+        forgetHeardInterfaces(key)
 
         log("Dropped the path to ${destinationHash.toHexString()}: its peer left that interface")
 
@@ -1689,7 +1705,7 @@ object Transport {
         val key = destinationHash.toKey()
         val candidateIsFallback = fallbackInterfaceNames.contains(candidate.name)
 
-        if (fallbackPinnedDestinations.contains(key) && !candidateIsFallback) {
+        if (isRejectedByPin(destinationHash, candidate)) {
             log("[FALLBACK] REJECT ${destinationHash.toHexString()}: pinned to carrier, rejecting normal ${candidate.name}")
 
             return FallbackArbitration.REJECT
@@ -1785,8 +1801,215 @@ object Transport {
         fallbackLastHeard.entries.removeIf { it.value.isEmpty() }
     }
 
+    /**
+     * Tells whether the pin on a destination rejects an announce that arrived on [candidate].
+     *
+     * A destination pinned to its fallback interface takes announces from fallback interfaces
+     * only. See [fallbackPinnedDestinations].
+     *
+     * @param destinationHash hash of the destination the announce is from.
+     * @param candidate the interface the announce arrived on.
+     * @return true when the destination is pinned and [candidate] is not a fallback interface.
+     */
+    private fun isRejectedByPin(destinationHash: ByteArray, candidate: InterfaceRef): Boolean =
+        fallbackPinnedDestinations.contains(destinationHash.toKey()) &&
+            !fallbackInterfaceNames.contains(candidate.name)
+
+    // ===== Interfaces a destination was heard on (fork addition, not in Python/upstream) =====
+    //
+    // Ported from reticulum-swift's PathTable. The path table keeps one path for each destination,
+    // so it cannot say which other interfaces the destination can be reached on, or how far away
+    // it is on each. This section keeps that. See port-deviations.md.
+
+    /**
+     * The last announce heard from each destination on each interface.
+     *
+     * The outer key is the destination hash. The inner key is the hash of the interface the
+     * announce arrived on, which is what [PathEntry.receivingInterfaceHash] holds. Each inner map
+     * is never changed after it is stored. A new announce stores a new map.
+     *
+     * It is kept in memory only. A destination's entry is removed when its path is dropped.
+     * [cullTables] removes the entry of a destination that has no path.
+     */
+    private val lastHeardByInterface = ConcurrentHashMap<ByteArrayKey, Map<ByteArrayKey, InterfaceSighting>>()
+
+    /** The listeners that [addRouteListener] registered. */
+    private val routeListeners = CopyOnWriteArrayList<RouteListener>()
+
+    /**
+     * The destinations whose listeners are waiting to be called.
+     *
+     * A destination that is already waiting is not queued again. This keeps the queue of
+     * [routeListenerExecutor] no longer than the number of destinations.
+     */
+    private val pendingRouteNotifications = ConcurrentHashMap.newKeySet<ByteArrayKey>()
+
+    /**
+     * Runs the route listeners on one thread of its own, so no caller's lock is held during a
+     * call. [start] creates it and [stop] shuts it down.
+     */
+    @Volatile
+    private var routeListenerExecutor: java.util.concurrent.ExecutorService? = null
+
+    /**
+     * Returns every interface a destination's announces arrived on, with the last arrival on each.
+     *
+     * The path table keeps only the path it ranked best. This also returns the interfaces whose
+     * announces lost that ranking. An announce is recorded once it passed validation. An announce
+     * that ingress limiting holds back is recorded when it is released. An announce that a pin
+     * rejected is not recorded. See [setDestinationPinnedToFallback].
+     *
+     * A record has no age limit of its own. It is dropped when the destination's path is dropped,
+     * and it is not saved to disk. A path response is recorded like any other announce.
+     *
+     * @param destinationHash hash of the destination to look up.
+     * @return a copy of the record. Each key is the hash of an interface, the same value as
+     *   [PathEntry.receivingInterfaceHash] and [pathInterfaceHash]. The map is empty when the
+     *   destination was not heard.
+     */
+    fun heardInterfaces(destinationHash: ByteArray): Map<ByteArrayKey, InterfaceSighting> =
+        lastHeardByInterface[destinationHash.toKey()]?.toMap() ?: emptyMap()
+
+    /**
+     * Registers a listener for changes to the ways a destination can be reached.
+     *
+     * The listener stays registered when [stop] and [start] run. Adding the same listener twice
+     * registers it once.
+     *
+     * @param listener the listener to call. See [RouteListener.onRouteChanged] for when.
+     */
+    fun addRouteListener(listener: RouteListener) {
+        routeListeners.addIfAbsent(listener)
+    }
+
+    /**
+     * Removes a listener that [addRouteListener] registered.
+     *
+     * A change that [Transport] was already reporting when this ran may still reach the listener
+     * once. No later change does.
+     *
+     * @param listener the listener to remove.
+     */
+    fun removeRouteListener(listener: RouteListener) {
+        routeListeners.remove(listener)
+    }
+
+    /**
+     * Records that an announce from a destination arrived on an interface, then tells the route
+     * listeners.
+     *
+     * It replaces the earlier record for the same destination and interface.
+     *
+     * @param destinationHash hash of the destination the announce is from.
+     * @param interfaceRef the interface the announce arrived on.
+     * @param hops the hop count of the announce, as [PathEntry.hops] would hold it.
+     */
+    private fun recordHeardInterface(
+        destinationHash: ByteArray,
+        interfaceRef: InterfaceRef,
+        hops: Int,
+    ) {
+        val sighting = InterfaceSighting(heardAtMs = System.currentTimeMillis(), hops = hops)
+
+        lastHeardByInterface.compute(destinationHash.toKey()) { _, heard ->
+            heard.orEmpty() + (interfaceRef.hash.toKey() to sighting)
+        }
+
+        notifyRouteListeners(destinationHash)
+    }
+
+    /**
+     * Drops the record of where a destination was heard, unless the destination has a path.
+     *
+     * The check and the removal are one step for [recordHeardInterface]. So an announce that
+     * stores a new path while this runs keeps its record.
+     *
+     * @param key hash of the destination.
+     * @return true when a record was dropped.
+     */
+    private fun dropHeardInterfacesWithoutPath(key: ByteArrayKey): Boolean {
+        var dropped = false
+
+        lastHeardByInterface.computeIfPresent(key) { _, heard ->
+            dropped = !pathTable.containsKey(key)
+
+            heard.takeUnless { dropped }
+        }
+
+        return dropped
+    }
+
+    /**
+     * Drops the record of where a destination was heard, then tells the route listeners.
+     *
+     * Call it after the destination's path was removed from [pathTable]. The record stays when
+     * an announce has stored a new path since.
+     *
+     * @param key hash of the destination whose path was removed.
+     */
+    private fun forgetHeardInterfaces(key: ByteArrayKey) {
+        dropHeardInterfacesWithoutPath(key)
+        notifyRouteListeners(key.bytes)
+    }
+
+    /**
+     * Drops the record of every destination that has no path, and tells the route listeners
+     * about each one.
+     *
+     * [pathTable] is public, so a caller can remove a path without [forgetHeardInterfaces]
+     * running. An announce with more hops than [TransportConstants.PATHFINDER_M] is recorded and
+     * gets no path. This removes both kinds. After it, [lastHeardByInterface] is no larger than
+     * [pathTable].
+     */
+    private fun pruneHeardInterfaces() {
+        for (key in lastHeardByInterface.keys) {
+            if (dropHeardInterfacesWithoutPath(key)) notifyRouteListeners(key.bytes)
+        }
+    }
+
+    /**
+     * Asks [routeListenerExecutor] to call every route listener for one destination.
+     *
+     * It returns at once. The listeners run later, on the executor's thread, so the caller may
+     * hold [jobsLock]. A listener that throws is logged and the next listener still runs. Nothing
+     * is called while [Transport] is stopped.
+     *
+     * @param destinationHash hash of the destination that changed.
+     */
+    private fun notifyRouteListeners(destinationHash: ByteArray) {
+        if (routeListeners.isEmpty()) return
+
+        val executor = routeListenerExecutor ?: return
+        val key = destinationHash.copyOf().toKey()
+
+        if (!pendingRouteNotifications.add(key)) return
+
+        try {
+            executor.execute {
+                // Removed before the calls, so a change that comes during them is queued again.
+                pendingRouteNotifications.remove(key)
+
+                for (listener in routeListeners) {
+                    try {
+                        listener.onRouteChanged(key.bytes.copyOf())
+                    } catch (e: Exception) {
+                        log("A route listener failed for ${key.bytes.toHexString()}: ${e.message}")
+                    }
+                }
+            }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            // stop() shut the executor down after it was read above.
+            pendingRouteNotifications.remove(key)
+        }
+    }
+
     fun expirePath(destinationHash: ByteArray) {
-        pathTable.remove(destinationHash.toKey())
+        val key = destinationHash.toKey()
+        val hadPath = pathTable.remove(key) != null
+        val hadSightings = dropHeardInterfacesWithoutPath(key)
+
+        if (hadPath || hadSightings) notifyRouteListeners(destinationHash)
+
         pathStore?.removePath(destinationHash)
     }
 
@@ -3625,6 +3848,7 @@ object Transport {
                 // will naturally re-discover the route with the current interface hash.
                 log("Removing stale path for $destHex: its interface is gone or not carrying traffic")
                 pathTable.remove(packet.destinationHash.toKey())
+                forgetHeardInterfaces(packet.destinationHash.toKey())
             }
             if (outboundInterface != null) {
                 log("Sending to $destHex via path (${pathEntry.hops} hops) on ${outboundInterface.name}")
@@ -4030,6 +4254,17 @@ object Transport {
         // branch is similarly emission-time-aware in Python.
         val existingEntry = pathTable[destHash.toKey()]
 
+        // Heard interfaces (fork addition): the announce passed validation, so record the
+        // interface it arrived on. This comes before every check below that may keep the announce
+        // out of the path table: the fallback tier, a random blob seen before, an older emission
+        // time, a worse hop count and the hop limit. A pin rejection is the one exception, as in
+        // reticulum-swift:
+        // a transport node may still relay the old route of a pinned peer, and that copy does not
+        // show the peer is there.
+        if (!isRejectedByPin(destHash, interfaceRef)) {
+            recordHeardInterface(destHash, interfaceRef, packet.hops)
+        }
+
         // Fallback-interface tier (fork addition): a normal interface out-ranks a fallback one for
         // the same destination regardless of hop count, a pinned destination rejects normal
         // announces outright, and every arrival is recorded as the liveness signal the takeover
@@ -4109,6 +4344,11 @@ object Transport {
 
         pathTable[destHash.toKey()] = pathEntry
         pathStore?.upsertPath(destHash, pathEntry)
+
+        // Heard interfaces (fork addition): record the interface again, now that the path is
+        // stored. Another thread may have dropped the old path since the first record, and the
+        // sightings with it. This also tells the route listeners that the path changed.
+        recordHeardInterface(destHash, interfaceRef, packet.hops)
 
         // If receiving interface has a tunnel, also store path in tunnel for persistence
         addPathToTunnel(
@@ -5581,6 +5821,15 @@ object Transport {
         fallbackLastHeard.computeIfAbsent(destinationHash.toKey()) { ConcurrentHashMap() }[interfaceName] = timestampMs
     }
 
+    /**
+     * Waits until every route listener call that was queued before this call has finished.
+     *
+     * It is a test seam. It does nothing while [Transport] is stopped.
+     */
+    internal fun drainRouteListenersForTest() {
+        routeListenerExecutor?.submit {}?.get()
+    }
+
     fun packetHashlistSizeForTest(): Int = packetHashlist.size
 
     /** Whether a packet hash is currently remembered (active or prev set). */
@@ -5736,7 +5985,10 @@ object Transport {
                 log("Error enumerating blackhole-associated destinations: ${e.message}")
             }
         }
-        for (k in drop) pathTable.remove(k)
+        for (k in drop) {
+            pathTable.remove(k)
+            forgetHeardInterfaces(k)
+        }
         if (drop.isNotEmpty()) {
             log("Removed ${drop.size} destination(s) associated with blackholed identities from path table")
         }
@@ -5831,10 +6083,14 @@ object Transport {
         // Remove expired path entries and entries whose interface no longer exists
         // (matches Python Transport.py:707-720)
         pathStore?.removeExpiredBefore(now)
+
+        val culledPaths = mutableListOf<ByteArrayKey>()
+
         pathTable.entries.removeIf { entry ->
             val pathEntry = entry.value
             if (pathEntry.isExpired()) {
                 pathStore?.removePath(entry.key.bytes)
+                culledPaths.add(entry.key)
                 log("Path to ${entry.key} timed out and was removed")
                 true
             } else if (!withinStartupGrace && findInterfaceByHash(pathEntry.receivingInterfaceHash) == null) {
@@ -5842,12 +6098,17 @@ object Transport {
                 // async interface registration (e.g., BLE, TCP) to complete.
                 // Python registers interfaces synchronously before first cull.
                 pathStore?.removePath(entry.key.bytes)
+                culledPaths.add(entry.key)
                 log("Path to ${entry.key} was removed since the attached interface no longer exists")
                 true
             } else {
                 false
             }
         }
+
+        // Heard interfaces (fork addition): forget where each culled destination was heard. This
+        // runs after the removal, so a route listener never finds the culled path still there.
+        culledPaths.forEach(::forgetHeardInterfaces)
 
         // Remove expired reverse entries
         reverseTable.entries.removeIf { it.value.isExpired() }
@@ -5874,6 +6135,9 @@ object Transport {
 
         // Fallback tier (fork addition): bound the last-heard bookkeeping alongside the paths.
         pruneFallbackLastHeard(now)
+
+        // Heard interfaces (fork addition): a record is kept only while its destination has a path.
+        pruneHeardInterfaces()
 
         // Remove expired tunnels
         cleanExpiredTunnels()
@@ -6123,6 +6387,7 @@ object Transport {
                 )
             pathTable[destKey] = restoredPath
             pathStore?.upsertPath(destKey.bytes, restoredPath)
+            notifyRouteListeners(destKey.bytes)
             log("Restored path to $destKey (${pathEntry.hops} hops) via tunnel ${tunnel.tunnelId.toHexString()}")
         }
 
@@ -6918,3 +7183,6 @@ data class HeldAnnounce(
     val hops: Int,
     val receivingInterface: InterfaceRef,
 )
+
+/** Name of the thread that calls the route listeners. It shows in thread dumps and logs. */
+private const val ROUTE_LISTENER_THREAD_NAME = "Transport-route-listeners"

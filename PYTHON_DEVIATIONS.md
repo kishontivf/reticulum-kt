@@ -108,6 +108,65 @@ if needed.
 
 ---
 
+## Transport: Interfaces a Destination Was Heard On, with Hop Counts
+
+**Python behavior** (`Transport.py`, announce handling in `inbound`):
+Python keeps one path for each destination in `path_table`. An announce
+that loses the path ranking is dropped, and nothing remembers the
+interface it arrived on or its hop count. Python has no listener for a
+path change. An announce handler is called only for an announce that
+was added to the path table.
+
+**Kotlin behavior** (`Transport.kt:processAnnounce`, `heardInterfaces`,
+`addRouteListener`, `removeRouteListener`):
+`Transport` also keeps, for each destination, the last announce heard on
+each interface. Each record is an `InterfaceSighting`: the arrival time
+in epoch milliseconds, and the hop count as `PathEntry.hops` holds it.
+A destination that announced to this node directly has 1. One behind a
+local shared instance has 0. The interface is keyed by its hash, the
+value `PathEntry.receivingInterfaceHash` holds.
+
+- `Transport.heardInterfaces(destinationHash)` returns a copy of the
+  records for one destination.
+- An announce is recorded after it passed validation, signature
+  included. It is recorded before the path ranking, so an announce with
+  a known random blob, an older emission time, a worse hop count or more
+  hops than `PATHFINDER_M` is still recorded. A path response is
+  recorded like any other announce.
+- The packet filter lets a second copy of an announce through, as
+  Python's does. So the same announce on a second interface is recorded
+  too.
+- Three kinds of valid announce are not recorded: one held by ingress
+  limiting until it is released, one for this node's own destination,
+  and one that a pin rejected (`setDestinationPinnedToFallback`).
+- The records of a destination are dropped when its path is dropped or
+  expires, and when `Transport` stops. A record has no age limit of its
+  own. The records are kept in memory only.
+- `Transport.addRouteListener(listener)` registers a `RouteListener`.
+  It is called with the destination hash after a record or a path was
+  stored, and after a path was dropped. It is not called when
+  `Transport` stops. The call runs on a thread of its own, with none of
+  `Transport`'s locks held. A listener that throws does not stop
+  announce handling.
+
+**Why**: The app shows the user every link a contact can be reached on,
+and whether each one is direct. The path table keeps only the winner of
+the ranking, and the hop count of a losing announce cannot be worked out
+later. reticulum-swift has the same addition, so both apps show the same
+list. See its `port-deviations.md`, the entry
+"`PathTable.lastHeardByInterface` carries hop count +
+`heardInterfaces(for:)` reader".
+
+**Risk**: Low. The path ranking, the announce rebroadcast and the data
+saved to disk are unchanged. The cost is one small map entry for each
+announce, and one more thread while `Transport` runs. After each cull
+the map is no larger than the path table.
+
+**Resolution**: This is an intentional addition, not a workaround. The
+full entry is in `port-deviations.md`. Released as 0.3.0.
+
+---
+
 ## Conformance Test Status
 
 78 of 79 conformance tests pass (only `bz2_compress` differs due to
